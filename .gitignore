@@ -1,0 +1,7 @@
+.build/
+.DS_Store
+xcuserdata/
+.swiftpm/
+
+# Local Claude Code settings
+.claude/

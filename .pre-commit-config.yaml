@@ -1,0 +1,23 @@
+minimum_pre_commit_version: 2.9.0
+default_install_hook_types: [pre-commit]
+repos:
+  - repo: local
+    hooks:
+      - id: secret-scan
+        name: scan for Anthropic API keys
+        entry: bash -c 'if grep -rslE "sk-ant-[a-zA-Z0-9]{2,}-[a-zA-Z0-9_-]{10,}" -- "$@"; then echo "API key found in the file(s) above — remove before committing"; exit 1; fi' --
+        language: system
+        stages: [pre-commit]
+      - id: swift-format
+        name: swift format
+        entry: swift format format --in-place
+        language: system
+        types: [swift]
+        files: \.swift$
+      - id: swift-test
+        name: swift test
+        entry: swift test
+        language: system
+        pass_filenames: false
+        types: [swift]
+        stages: [pre-push]
