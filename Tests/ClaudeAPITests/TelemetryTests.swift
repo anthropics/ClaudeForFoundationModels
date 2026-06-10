@@ -9,7 +9,7 @@ import Testing
 @Suite struct TelemetryTests {
   @Test func `user agent carries the sdk, swift, and platform components`() {
     let userAgent = Telemetry.userAgent
-    #expect(userAgent.contains("ClaudeAPI/\(Telemetry.sdkVersion)"))
+    #expect(userAgent.hasPrefix("ClaudeForFoundationModels/\(Telemetry.sdkVersion)"))
     #expect(userAgent.contains("Swift/"))
     #expect(
       userAgent.contains("macOS/") || userAgent.contains("iOS/") || userAgent.contains("visionOS/")
@@ -19,12 +19,13 @@ import Testing
 
   @Test func `the app component is folded in only when a bundle id exists`() {
     // In the test runner there's usually no `CFBundleIdentifier`, so the
-    // User-Agent starts at the SDK token. When a bundle id is present it precedes it.
+    // comment starts at the Swift token. When a bundle id is present it leads
+    // the comment.
     let userAgent = Telemetry.userAgent
     if let app = Telemetry.appComponent {
-      #expect(userAgent.hasPrefix("\(app) ClaudeAPI/"))
+      #expect(userAgent.contains("(\(app); Swift/"))
     } else {
-      #expect(userAgent.hasPrefix("ClaudeAPI/"))
+      #expect(userAgent.contains("(Swift/"))
     }
   }
 }

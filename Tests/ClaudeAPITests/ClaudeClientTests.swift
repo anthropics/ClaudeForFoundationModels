@@ -39,7 +39,10 @@ import Testing
     #expect(request.value(forHTTPHeaderField: "x-api-key") == "sk-test")
     #expect(request.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01")
     #expect(request.value(forHTTPHeaderField: "content-type") == "application/json")
-    #expect(request.value(forHTTPHeaderField: "User-Agent")?.contains("ClaudeAPI/") == true)
+    #expect(
+      request.value(forHTTPHeaderField: "User-Agent")?.contains("ClaudeForFoundationModels/")
+        == true
+    )
 
     // The request goes straight to the transport, so its httpBody is intact
     // (URLSession would have moved it into httpBodyStream).
