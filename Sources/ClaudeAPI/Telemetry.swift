@@ -4,19 +4,21 @@
 import Foundation
 
 /// Builds the `User-Agent`:
-/// `{app}/{version} ({sdk}/{version}; Swift/{version}; {os}/{version})`.
+/// `{sdk}/{version} ({app}/{version}; Swift/{version}; {os}/{version})`.
 ///
-/// The leading `{app}/{version}` is the embedding app's bundle ID and marketing
-/// version, auto-discovered from `Bundle.main` so the developer does nothing.
-/// This is the per-app attribution for API-key and proxy auth where there's no
+/// The SDK token leads so first-token User-Agent heuristics attribute the
+/// traffic to this package no matter which app embeds it. The `{app}/{version}`
+/// in the comment is the embedding app's bundle ID and marketing version,
+/// auto-discovered from `Bundle.main` so the developer does nothing. This is
+/// the per-app attribution for API-key and proxy auth where there's no
 /// `application_slug`. Best-effort and self-reported — analytics, not a trust
 /// boundary.
 package enum Telemetry {
-  package static let sdkVersion = "0.1.0"
+  package static let sdkVersion = "0.1.1"
 
   package static var userAgent: String {
-    let app = appComponent.map { "\($0) " } ?? ""
-    return "\(app)ClaudeAPI/\(sdkVersion) (Swift/\(swiftVersion); \(platform))"
+    let app = appComponent.map { "\($0); " } ?? ""
+    return "ClaudeForFoundationModels/\(sdkVersion) (\(app)Swift/\(swiftVersion); \(platform))"
   }
 
   /// `{bundle.id}/{marketing-version}`, or `nil` outside an app bundle (CLI,
