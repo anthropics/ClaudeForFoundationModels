@@ -97,6 +97,22 @@ struct EventTranslator: Sendable {
               action: .toolCall(id: id, name: name, action: .appendArguments("", tokenCount: 0))
             )
           )
+        case .serverToolUse(let id, let name, let input) where input != .object([:]):
+          // When the call's input arrives whole in the start block, surface
+          // the segment immediately; the stop handler re-emits the same id.
+          // An empty input means the real input is still streaming as deltas,
+          // and parsing it now would mislabel a known tool as unrecognized.
+          await channel.send(
+            .response(
+              entryID: responseEntryID,
+              action: .updateCustomSegment(
+                ClaudeServerToolSegment(
+                  id: id,
+                  content: .init(callToolName: name, input: input)
+                )
+              )
+            )
+          )
         case .serverToolResult(let toolUseID, let type, let content):
           // Results arrive whole in the start event, not as deltas. Updating
           // the call's segment id folds call and result into one segment.
@@ -200,6 +216,12 @@ struct EventTranslator: Sendable {
     }
   }
 
+  /// Placeholder token count for streamed content deltas. The API reports
+  /// usage only at message boundaries, so no real per-delta count exists, and
+  /// a count of 0 suppresses partial-snapshot delivery. Authoritative totals
+  /// still arrive via `updateUsage` at `message_delta`.
+  private static let deltaTokenCount = 1
+
   private func send(
     _ delta: StreamEvent.Delta,
     for kind: BlockKind?,
@@ -210,7 +232,7 @@ struct EventTranslator: Sendable {
       await channel.send(
         .response(
           entryID: responseEntryID,
-          action: .appendText(t, tokenCount: 0)
+          action: .appendText(t, tokenCount: Self.deltaTokenCount)
         )
       )
 
@@ -218,7 +240,7 @@ struct EventTranslator: Sendable {
       await channel.send(
         .reasoning(
           entryID: reasoningEntryID,
-          action: .appendText(t, tokenCount: 0)
+          action: .appendText(t, tokenCount: Self.deltaTokenCount)
         )
       )
 
@@ -238,7 +260,11 @@ struct EventTranslator: Sendable {
       await channel.send(
         .toolCalls(
           entryID: toolCallsEntryID,
-          action: .toolCall(id: id, name: name, action: .appendArguments(chunk, tokenCount: 0))
+          action: .toolCall(
+            id: id,
+            name: name,
+            action: .appendArguments(chunk, tokenCount: Self.deltaTokenCount)
+          )
         )
       )
 

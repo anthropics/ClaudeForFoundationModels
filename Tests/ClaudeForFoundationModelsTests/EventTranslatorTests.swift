@@ -22,10 +22,12 @@ import Testing
       #"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":", world"}}"#,
       #"{"type":"content_block_stop","index":0}"#,
     ])
+    // A zero count would suppress partial-snapshot delivery; see
+    // `EventTranslator.deltaTokenCount`.
     #expect(
       events == [
-        .responseText(entryID: "r", text: "Hello"),
-        .responseText(entryID: "r", text: ", world"),
+        .responseText(entryID: "r", text: "Hello", tokenCount: 1),
+        .responseText(entryID: "r", text: ", world", tokenCount: 1),
       ]
     )
   }
@@ -38,11 +40,12 @@ import Testing
     // Reasoning is a top-level entry, not nested in the response. The entry id
     // is minted per thinking block, so match structurally rather than by id.
     #expect(events.count == 1)
-    guard case .reasoningText(let entryID, "Let me think") = events[0] else {
+    guard case .reasoningText(let entryID, "Let me think", let tokenCount) = events[0] else {
       Issue.record("expected reasoning appendText, got \(events[0])")
       return
     }
     #expect(entryID != nil)
+    #expect(tokenCount > 0)
   }
 
   @Test func `tool call streams to a separate tool-calls entry`() async throws {
@@ -53,14 +56,27 @@ import Testing
     ])
     #expect(
       events == [
-        .toolCallArguments(entryID: "t", id: "toolu_1", name: "getWeather", arguments: ""),
         .toolCallArguments(
           entryID: "t",
           id: "toolu_1",
           name: "getWeather",
-          arguments: #"{"city":"#
+          arguments: "",
+          tokenCount: 0
         ),
-        .toolCallArguments(entryID: "t", id: "toolu_1", name: "getWeather", arguments: #""SF"}"#),
+        .toolCallArguments(
+          entryID: "t",
+          id: "toolu_1",
+          name: "getWeather",
+          arguments: #"{"city":"#,
+          tokenCount: 1
+        ),
+        .toolCallArguments(
+          entryID: "t",
+          id: "toolu_1",
+          name: "getWeather",
+          arguments: #""SF"}"#,
+          tokenCount: 1
+        ),
       ]
     )
   }
@@ -75,8 +91,8 @@ import Testing
     ])
     #expect(
       events == [
-        .responseText(entryID: "r", text: #"{"title":"#),
-        .responseText(entryID: "r", text: #""Trip"}"#),
+        .responseText(entryID: "r", text: #"{"title":"#, tokenCount: 1),
+        .responseText(entryID: "r", text: #""Trip"}"#, tokenCount: 1),
       ]
     )
   }
@@ -116,7 +132,7 @@ import Testing
       #"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"AAEC"}}"#,
     ])
     #expect(events.count == 2)
-    guard case .reasoningText(let textEntryID, "hmm") = events[0] else {
+    guard case .reasoningText(let textEntryID, "hmm", _) = events[0] else {
       Issue.record("expected reasoning appendText, got \(events[0])")
       return
     }
@@ -132,18 +148,21 @@ import Testing
 
   @Test func `server tool input arriving whole in the start block is parsed`() async throws {
     // The agentic search flow delivers the call input in content_block_start
-    // with no input_json_delta events.
+    // with no input_json_delta events. The segment is surfaced at block start
+    // and re-emitted (unchanged) at block stop.
     let events = try await translated([
       #"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv_2","name":"web_search","input":{"query":"weather"}}}"#,
       #"{"type":"content_block_stop","index":0}"#,
     ])
-    #expect(events.count == 1)
-    guard case .responseCustomSegment("r", "srv_2", .webSearch(let call)) = events[0] else {
-      Issue.record("expected webSearch segment, got \(events[0])")
-      return
+    #expect(events.count == 2)
+    for event in events {
+      guard case .responseCustomSegment("r", "srv_2", .webSearch(let call)) = event else {
+        Issue.record("expected webSearch segment, got \(event)")
+        return
+      }
+      #expect(call.query == "weather")
+      #expect(call.outcome == nil)
     }
-    #expect(call.query == "weather")
-    #expect(call.outcome == nil)
   }
 
   @Test func `redacted thinking becomes a marked signature-only reasoning entry`() async throws {
@@ -173,7 +192,7 @@ import Testing
       #"{"type":"content_block_delta","index":0,"delta":{"type":"some_future_delta","stuff":1}}"#,
       #"{"type":"some_future_event","stuff":1}"#,
     ])
-    #expect(events == [.responseText(entryID: "r", text: "Hi")])
+    #expect(events == [.responseText(entryID: "r", text: "Hi", tokenCount: 1)])
   }
 
   @Test func `server tool use and result become custom segments`() async throws {

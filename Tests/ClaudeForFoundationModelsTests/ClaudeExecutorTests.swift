@@ -73,7 +73,7 @@ import Testing
     }
 
     let texts = events.compactMap {
-      if case .responseText(_, let t) = $0 { t } else { nil }
+      if case .responseText(_, let t, _) = $0 { t } else { nil }
     }
     #expect(texts.contains("Hi"))
   }
