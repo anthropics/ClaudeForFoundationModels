@@ -14,7 +14,7 @@ import Foundation
 /// `application_slug`. Best-effort and self-reported — analytics, not a trust
 /// boundary.
 package enum Telemetry {
-  package static let sdkVersion = "0.1.1"
+  package static let sdkVersion = "0.1.2"
 
   package static var userAgent: String {
     let app = appComponent.map { "\($0); " } ?? ""
