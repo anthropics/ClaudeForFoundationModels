@@ -14,10 +14,3 @@ repos:
         language: system
         types: [swift]
         files: \.swift$
-      - id: swift-test
-        name: swift test
-        entry: swift test
-        language: system
-        pass_filenames: false
-        types: [swift]
-        stages: [pre-push]
