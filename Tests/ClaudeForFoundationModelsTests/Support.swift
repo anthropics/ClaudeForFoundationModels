@@ -50,7 +50,7 @@ extension LanguageModelExecutorGenerationRequest {
 /// assert on whole event sequences — the framework's event types aren't
 /// `Equatable`.
 enum RecordedEvent: Equatable {
-  case responseText(entryID: String?, text: String)
+  case responseText(entryID: String?, text: String, tokenCount: Int)
   case responseCustomSegment(
     entryID: String?,
     segmentID: String,
@@ -63,10 +63,16 @@ enum RecordedEvent: Equatable {
     outputTotal: Int,
     outputReasoning: Int
   )
-  case reasoningText(entryID: String?, text: String)
+  case reasoningText(entryID: String?, text: String, tokenCount: Int)
   case reasoningSignature(entryID: String?, signature: Data)
   case reasoningMetadata(entryID: String?, keys: [String])
-  case toolCallArguments(entryID: String?, id: String, name: String, arguments: String)
+  case toolCallArguments(
+    entryID: String?,
+    id: String,
+    name: String,
+    arguments: String,
+    tokenCount: Int
+  )
   case other(String)
 
   init(_ event: any LanguageModelExecutorGenerationChannel.Event) {
@@ -75,7 +81,11 @@ enum RecordedEvent: Equatable {
     case let response as Channel.Response:
       switch response.action {
       case .appendText(let fragment):
-        self = .responseText(entryID: response.entryID, text: fragment.content)
+        self = .responseText(
+          entryID: response.entryID,
+          text: fragment.content,
+          tokenCount: fragment.tokenCount
+        )
       case .updateCustomSegment(let segment):
         if let segment = segment as? ClaudeServerToolSegment {
           self = .responseCustomSegment(
@@ -102,7 +112,11 @@ enum RecordedEvent: Equatable {
     case let reasoning as Channel.Reasoning:
       switch reasoning.action {
       case .appendText(let fragment):
-        self = .reasoningText(entryID: reasoning.entryID, text: fragment.content)
+        self = .reasoningText(
+          entryID: reasoning.entryID,
+          text: fragment.content,
+          tokenCount: fragment.tokenCount
+        )
       case .updateSignature(let signature):
         self = .reasoningSignature(entryID: reasoning.entryID, signature: signature.signature)
       case .updateMetadata(let metadata):
@@ -120,7 +134,8 @@ enum RecordedEvent: Equatable {
             entryID: toolCalls.entryID,
             id: call.id,
             name: call.name,
-            arguments: fragment.content
+            arguments: fragment.content,
+            tokenCount: fragment.tokenCount
           )
         default:
           self = .other(String(describing: call.action))
