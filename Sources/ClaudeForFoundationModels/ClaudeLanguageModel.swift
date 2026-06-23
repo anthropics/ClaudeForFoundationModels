@@ -93,7 +93,7 @@ extension ClaudeLanguageModel: LanguageModel {
     if model.capabilities.imageInput { capabilities.append(.vision) }
     if model.capabilities.adaptiveThinking { capabilities.append(.reasoning) }
     if model.capabilities.structuredOutput { capabilities.append(.guidedGeneration) }
-    return LanguageModelCapabilities(capabilities: capabilities)
+    return LanguageModelCapabilities(capabilities)
   }
 
   public var executorConfiguration: ClaudeExecutor.Configuration {
