@@ -66,8 +66,18 @@ public struct ClaudeModel: Sendable, Hashable {
   }
 
   // Capability matrix per the Messages API docs: sampling params are rejected
-  // starting with Opus 4.7 (Opus 4.6 still accepts them), `.xhigh` exists only
-  // on Opus 4.7+, and `.max` requires the 4.6 generation or newer.
+  // on Sonnet 5 and Opus 4.7+ (Opus 4.6 still accepts them), `.xhigh` exists
+  // only on Opus 4.7+, and `.max` requires the 4.6 generation or newer.
+  /// High-performance model for coding and agents.
+  public static let sonnet5 = ClaudeModel(
+    id: "claude-sonnet-5",
+    capabilities: .init(
+      effortLevels: [.low, .medium, .high, .max],
+      adaptiveThinking: true,
+      structuredOutput: true,
+      imageInput: true
+    )
+  )
   public static let opus4_8 = ClaudeModel(
     id: "claude-opus-4-8",
     capabilities: .init(

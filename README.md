@@ -52,7 +52,7 @@ import FoundationModels
 import ClaudeForFoundationModels
 
 let model = ClaudeLanguageModel(
-  name: .sonnet4_6,
+  name: .sonnet5,
   auth: .apiKey(ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? "")
 )
 
@@ -120,13 +120,13 @@ Set the credential with the `auth:` parameter.
 ```swift
 // Development. A bundled key is extractable from a shipping app — use one of
 // the production options below before release.
-ClaudeLanguageModel(name: .sonnet4_6, auth: .apiKey("..."))
+ClaudeLanguageModel(name: .sonnet5, auth: .apiKey("..."))
 
 // Production via your own backend. The relay at `baseURL` adds the credential
 // server-side; the app ships no key. `headers` are sent on every request so the
 // proxy can authorize the caller — pass `[:]` if it needs none.
 ClaudeLanguageModel(
-  name: .sonnet4_6,
+  name: .sonnet5,
   auth: .proxied(headers: ["X-App-Token": "..."]),
   baseURL: URL(string: "https://api.yourapp.com/claude")!
 )
@@ -168,7 +168,7 @@ Server-side tools run on Anthropic's infrastructure within a single round-trip �
 
 ```swift
 let model = ClaudeLanguageModel(
-  name: .sonnet4_6,
+  name: .sonnet5,
   auth: auth,
   serverTools: [
     .webSearch(maxUses: 5),
