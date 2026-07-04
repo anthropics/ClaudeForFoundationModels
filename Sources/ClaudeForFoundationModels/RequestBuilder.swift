@@ -24,9 +24,9 @@ enum RequestBuilder {
     var system: String?
     var messages: [Message] = []
 
-    // The API validates replayed thinking blocks only when the request
-    // enables thinking — and rejects them when it doesn't — so reasoning
-    // entries replay only on requests that send `thinking`.
+    // Replayed thinking blocks are only required during tool use with
+    // thinking active, and prior-turn thinking may always be omitted — so
+    // reasoning entries replay only on requests that send `thinking`.
     let toolChoice = toolChoice(for: request.generationOptions.toolCallingMode)
     // Forced tool use is a contract — the API rejects thinking alongside
     // it, so thinking yields for that request.
@@ -44,11 +44,14 @@ enum RequestBuilder {
         guard thinkingConfig != nil else { continue }
         // Replayed as a thinking block so the API can verify the signature
         // and keep the thought chain intact across tool-use turns. Redacted
-        // thoughts (marked by the translator, or signature-only entries) go
-        // back verbatim as redacted_thinking, the shape the API requires.
-        let thought = text(of: r.segments)
-        let isRedacted =
-          (r.metadata[redactedThinkingMetadataKey] as? Bool) == true || thought.isEmpty
+        // thoughts (marked by the translator) go back verbatim as
+        // redacted_thinking. An unmarked entry with empty text is a thinking
+        // block whose display was omitted — it must echo back as received;
+        // reshaping it as redacted_thinking corrupts the payload.
+        // Thinking text replays as the concatenation it streamed as — an
+        // injected separator would modify the block, which the API rejects.
+        let thought = text(of: r.segments, separator: "")
+        let isRedacted = (r.metadata[redactedThinkingMetadataKey] as? Bool) == true
         let block: ContentBlock =
           if isRedacted, let redacted = r.signature {
             .redactedThinking(redacted)
@@ -210,7 +213,7 @@ enum RequestBuilder {
     return out
   }
 
-  private static func text(of segments: [Transcript.Segment]) -> String {
+  private static func text(of segments: [Transcript.Segment], separator: String = "\n") -> String {
     segments.compactMap {
       switch $0 {
       case .text(let t): t.content
@@ -219,7 +222,7 @@ enum RequestBuilder {
       @unknown default: nil
       }
     }
-    .joined(separator: "\n")
+    .joined(separator: separator)
   }
 
   private static func contentBlocks(from segments: [Transcript.Segment]) throws -> [ContentBlock] {
@@ -266,9 +269,12 @@ enum RequestBuilder {
   }
 
   /// Adaptive thinking whenever the model accepts it; omitted otherwise —
-  /// sending the field to a model that rejects it is a hard 400.
+  /// sending `thinking` to a model that rejects it is a hard 400. Display is
+  /// pinned to summarized: every adaptive-thinking model accepts the field,
+  /// Sonnet 5 and Opus 4.7+ default to `omitted` (thinking blocks with empty
+  /// text), and display changes visibility only, not billing.
   private static func thinking(for model: ClaudeModel) -> ThinkingConfig? {
-    model.capabilities.adaptiveThinking ? .adaptive : nil
+    model.capabilities.adaptiveThinking ? .adaptive(display: .summarized) : nil
   }
 
   private static func resolvedEffort(
@@ -323,11 +329,12 @@ enum RequestBuilder {
     }
   }
 
-  /// Sampling is a hint, and the API rejects `temperature` ≠ 1, `top_p`, and
-  /// `top_k` whenever thinking is enabled (including adaptive). Thinking wins:
-  /// sampling flows only when the request carries no thinking. For sampling
-  /// control on a thinking-capable model, declare a custom ``ClaudeModel``
-  /// with `adaptiveThinking: false`.
+  /// Sampling is a hint. Sonnet 5 and Opus 4.7+ reject non-default
+  /// `temperature`/`top_p`/`top_k` outright (gated by `samplingParams`), and
+  /// whether the 4.6 generation accepts sampling alongside thinking is
+  /// undocumented — so sampling flows only when the request carries no
+  /// thinking. For sampling control on a thinking-capable model, declare a
+  /// custom ``ClaudeModel`` with `adaptiveThinking: false`.
   private static func applySampling(
     _ options: GenerationOptions,
     to req: inout MessagesRequest,

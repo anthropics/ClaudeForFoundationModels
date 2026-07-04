@@ -115,7 +115,7 @@ import Testing
     #expect(built.request.toolChoice == nil)
     #expect(built.request.tools == nil)
     // Compatible with thinking, unlike forced tool_use.
-    #expect(built.request.thinking == .adaptive)
+    #expect(built.request.thinking == .adaptive(display: .summarized))
     let format = try #require(built.request.outputConfig?.format)
     guard case .object(let schema) = format.schema,
       case .object(let props)? = schema["properties"]
@@ -207,6 +207,22 @@ import Testing
     let model = ClaudeModel(id: "claude-test", capabilities: .init(adaptiveThinking: false))
     let built = try RequestBuilder.build(from: request, model: model)
     #expect(built.request.thinking == nil)
+  }
+
+  // Issue #7: on Sonnet 5 and Opus 4.7+ `thinking.display` defaults to
+  // omitted — thinking blocks stream with empty text and reasoning entries
+  // end up with no segments. Every adaptive-thinking model accepts the field,
+  // so summarized display is requested unconditionally.
+  @Test func `adaptive thinking always requests summarized display`() throws {
+    let request = LanguageModelExecutorGenerationRequest.make(
+      transcript: Transcript(entries: [
+        .prompt(.init(segments: [.text(.init(content: "Hi"))]))
+      ])
+    )
+    for model: ClaudeModel in [.sonnet5, .opus4_8, .opus4_7, .sonnet4_6, .opus4_6] {
+      let built = try RequestBuilder.build(from: request, model: model)
+      #expect(built.request.thinking == .adaptive(display: .summarized))
+    }
   }
 
   @Test func `a schema on a model without structured output fails loudly`() throws {
@@ -334,7 +350,7 @@ import Testing
     )
     let built = try RequestBuilder.build(from: request, model: .sonnet4_6)
     #expect(built.request.toolChoice == ToolChoice.none)
-    #expect(built.request.thinking == .adaptive)
+    #expect(built.request.thinking == .adaptive(display: .summarized))
   }
 
   @Test func `sampling flows on models without thinking`() throws {
@@ -365,7 +381,8 @@ import Testing
   }
 
   @Test func `sampling is dropped when thinking is on`() throws {
-    // The API rejects temperature/top_p/top_k alongside thinking — sampling
+    // Sampling is withheld on thinking requests — the docs don't promise
+    // the 4.6 generation accepts it alongside thinking — sampling
     // is a hint, thinking wins.
     var options = GenerationOptions()
     options.temperature = 0.5
@@ -375,23 +392,42 @@ import Testing
       generationOptions: options
     )
     let built = try RequestBuilder.build(from: request, model: .sonnet4_6)
-    #expect(built.request.thinking == .adaptive)
+    #expect(built.request.thinking == .adaptive(display: .summarized))
     #expect(built.request.temperature == nil)
     #expect(built.request.topK == nil)
   }
 
-  @Test func `redacted reasoning replays as a redacted_thinking block`() throws {
-    let redacted = Data([0x01, 0x02, 0x03])
+  // An unmarked signature-only entry is a thinking block whose display was
+  // omitted, not a redacted thought — the API wants it echoed as received.
+  @Test func `unmarked signature-only reasoning replays as an empty thinking block`() throws {
+    let signature = Data([0x01, 0x02, 0x03])
     let transcript = Transcript(entries: [
       .prompt(.init(segments: [.text(.init(content: "Hi"))])),
-      // Signature with no text — how the translator surfaces redacted thoughts.
-      .reasoning(.init(segments: [], signature: redacted)),
+      .reasoning(.init(segments: [], signature: signature)),
       .response(.init(assetIDs: [], segments: [.text(.init(content: "Done."))])),
     ])
     let built = try RequestBuilder.build(from: .make(transcript: transcript), model: .sonnet4_6)
     let assistant = built.request.messages[1]
-    #expect(assistant.content[0] == .redactedThinking(redacted))
+    #expect(assistant.content[0] == .thinking("", signature: signature.base64EncodedString()))
     #expect(assistant.content[1] == .text("Done."))
+  }
+
+  @Test func `multi-segment reasoning replays without injected separators`() throws {
+    let transcript = Transcript(entries: [
+      .prompt(.init(segments: [.text(.init(content: "Hi"))])),
+      .reasoning(
+        .init(
+          segments: [.text(.init(content: "part one, ")), .text(.init(content: "part two"))],
+          signature: Data([0x01])
+        )
+      ),
+      .response(.init(assetIDs: [], segments: [.text(.init(content: "Done."))])),
+    ])
+    let built = try RequestBuilder.build(from: .make(transcript: transcript), model: .sonnet5)
+    #expect(
+      built.request.messages[1].content[0]
+        == .thinking("part one, part two", signature: Data([0x01]).base64EncodedString())
+    )
   }
 
   @Test func `server tool segments replay as server tool wire blocks`() throws {

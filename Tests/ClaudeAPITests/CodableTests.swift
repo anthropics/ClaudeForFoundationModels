@@ -20,7 +20,7 @@ import Testing
           inputSchema: ["type": "object", "properties": ["x": ["type": "string"]]]
         )
       ],
-      thinking: .adaptive,
+      thinking: .adaptive(display: .summarized),
       cacheControl: .init(ttl: .oneHour),
       stream: true
     )
@@ -29,6 +29,7 @@ import Testing
     #expect(json["model"] as? String == "claude-opus-4-7")
     #expect(json["max_tokens"] as? Int == 1024)
     #expect((json["thinking"] as? [String: Any])?["type"] as? String == "adaptive")
+    #expect((json["thinking"] as? [String: Any])?["display"] as? String == "summarized")
     #expect((json["cache_control"] as? [String: Any])?["ttl"] as? String == "1h")
     #expect((json["tools"] as? [[String: Any]])?.first?["input_schema"] != nil)
   }

@@ -1,10 +1,8 @@
 // Copyright 2026 Anthropic PBC
 // SPDX-License-Identifier: Apache-2.0
 
-import ClaudeAPI
 import Foundation
 import FoundationModels
-import Synchronization
 import Testing
 
 @testable import ClaudeForFoundationModels
@@ -123,59 +121,15 @@ import Testing
 
   /// SSE frames as the API sends them: `event:` + `data:` lines, each frame
   /// terminated by a blank line.
-  private let okStream = Data(
+  private let okStream = sseBody([
     [
-      [
-        "event: content_block_start",
-        #"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
-      ],
-      [
-        "event: content_block_delta",
-        #"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#,
-      ],
-      ["event: message_stop", #"data: {"type":"message_stop"}"#],
-    ]
-    .map { $0.joined(separator: "\n") + "\n\n" }.joined().utf8
-  )
-}
-
-// MARK: - Test doubles
-
-private final class MockTransport: HTTPTransport {
-  let status: Int
-  let body: Data
-  private let captured = Mutex<URLRequest?>(nil)
-
-  init(status: Int = 200, body: Data) {
-    self.status = status
-    self.body = body
-  }
-
-  var lastRequest: URLRequest? { captured.withLock { $0 } }
-
-  func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-    captured.withLock { $0 = request }
-    return (body, response(request))
-  }
-
-  func bytes(
-    for request: URLRequest
-  ) async throws -> (AsyncThrowingStream<UInt8, Error>, URLResponse) {
-    captured.withLock { $0 = request }
-    let body = self.body
-    let stream = AsyncThrowingStream<UInt8, Error> { continuation in
-      for byte in body { continuation.yield(byte) }
-      continuation.finish()
-    }
-    return (stream, response(request))
-  }
-
-  private func response(_ request: URLRequest) -> URLResponse {
-    HTTPURLResponse(
-      url: request.url!,
-      statusCode: status,
-      httpVersion: "HTTP/1.1",
-      headerFields: nil
-    )!
-  }
+      "event: content_block_start",
+      #"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+    ],
+    [
+      "event: content_block_delta",
+      #"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#,
+    ],
+    ["event: message_stop", #"data: {"type":"message_stop"}"#],
+  ])
 }

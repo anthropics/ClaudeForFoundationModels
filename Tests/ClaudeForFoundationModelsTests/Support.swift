@@ -1,12 +1,153 @@
 // Copyright 2026 Anthropic PBC
 // SPDX-License-Identifier: Apache-2.0
 
+import ClaudeAPI
 import CoreGraphics
 import Foundation
 import FoundationModels
+import Synchronization
 import Testing
 
 @testable import ClaudeForFoundationModels
+
+/// Joins SSE frames (each an array of `event:`/`data:` lines) into a wire body.
+func sseBody(_ frames: [[String]]) -> Data {
+  Data(frames.map { $0.joined(separator: "\n") + "\n\n" }.joined().utf8)
+}
+
+/// A complete assistant turn: one thinking block, then a `"Hello!"` text block.
+/// An empty `thinkingDeltas` mimics `display: omitted`, where the thinking
+/// block streams signature-only.
+func thinkingTurnSSE(thinkingDeltas: [String]) -> Data {
+  var frames: [[String]] = [
+    [
+      "event: message_start",
+      #"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+    ],
+    [
+      "event: content_block_start",
+      #"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+    ],
+  ]
+  for delta in thinkingDeltas {
+    let escaped = String(decoding: try! JSONEncoder().encode(delta), as: UTF8.self)
+    frames.append([
+      "event: content_block_delta",
+      #"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":\#(escaped)}}"#,
+    ])
+  }
+  frames += [
+    [
+      "event: content_block_delta",
+      #"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"c2ln"}}"#,
+    ],
+    ["event: content_block_stop", #"data: {"type":"content_block_stop","index":0}"#],
+    [
+      "event: content_block_start",
+      #"data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+    ],
+    [
+      "event: content_block_delta",
+      #"data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello!"}}"#,
+    ],
+    ["event: content_block_stop", #"data: {"type":"content_block_stop","index":1}"#],
+    [
+      "event: message_delta",
+      #"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}"#,
+    ],
+    ["event: message_stop", #"data: {"type":"message_stop"}"#],
+  ]
+  return sseBody(frames)
+}
+
+/// Text of every reasoning entry in the transcript, in order, joined.
+func reasoningText(in transcript: Transcript) -> String {
+  reasoningEntries(in: transcript)
+    .flatMap(\.segments)
+    .compactMap { segment -> String? in
+      if case .text(let t) = segment { return t.content }
+      return nil
+    }
+    .joined()
+}
+
+/// Reasoning entries in the transcript, in order.
+func reasoningEntries(in transcript: Transcript) -> [Transcript.Reasoning] {
+  transcript.compactMap { entry in
+    if case .reasoning(let r) = entry { return r }
+    return nil
+  }
+}
+
+/// An assistant turn whose thought arrives as an opaque `redacted_thinking`
+/// block, then a `"Hello!"` text block.
+func redactedThinkingTurnSSE(payload: Data) -> Data {
+  sseBody([
+    [
+      "event: message_start",
+      #"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+    ],
+    [
+      "event: content_block_start",
+      #"data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"\#(payload.base64EncodedString())"}}"#,
+    ],
+    ["event: content_block_stop", #"data: {"type":"content_block_stop","index":0}"#],
+    [
+      "event: content_block_start",
+      #"data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+    ],
+    [
+      "event: content_block_delta",
+      #"data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello!"}}"#,
+    ],
+    ["event: content_block_stop", #"data: {"type":"content_block_stop","index":1}"#],
+    [
+      "event: message_delta",
+      #"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}"#,
+    ],
+    ["event: message_stop", #"data: {"type":"message_stop"}"#],
+  ])
+}
+
+/// Serves a canned body for every request and records the last request.
+final class MockTransport: HTTPTransport {
+  let status: Int
+  let body: Data
+  private let captured = Mutex<URLRequest?>(nil)
+
+  init(status: Int = 200, body: Data) {
+    self.status = status
+    self.body = body
+  }
+
+  var lastRequest: URLRequest? { captured.withLock { $0 } }
+
+  func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+    captured.withLock { $0 = request }
+    return (body, response(request))
+  }
+
+  func bytes(
+    for request: URLRequest
+  ) async throws -> (AsyncThrowingStream<UInt8, Error>, URLResponse) {
+    captured.withLock { $0 = request }
+    let body = self.body
+    let stream = AsyncThrowingStream<UInt8, Error> { continuation in
+      for byte in body { continuation.yield(byte) }
+      continuation.finish()
+    }
+    return (stream, response(request))
+  }
+
+  private func response(_ request: URLRequest) -> URLResponse {
+    HTTPURLResponse(
+      url: request.url!,
+      statusCode: status,
+      httpVersion: "HTTP/1.1",
+      headerFields: nil
+    )!
+  }
+}
 
 /// A small solid-red image for exercising attachment paths.
 func makeTestImage(width: Int = 4, height: Int = 4) -> CGImage {
