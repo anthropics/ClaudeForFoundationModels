@@ -15,6 +15,42 @@ func sseBody(_ frames: [[String]]) -> Data {
   Data(frames.map { $0.joined(separator: "\n") + "\n\n" }.joined().utf8)
 }
 
+/// A complete assistant turn streaming `deltas` in one text block.
+func textTurn(
+  deltas: [String],
+  inputTokens: Int = 10,
+  cacheReadTokens: Int = 0,
+  cacheCreationTokens: Int = 0,
+  outputTokens: Int = 5
+) -> Data {
+  var frames: [[String]] = [
+    [
+      "event: message_start",
+      #"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":\#(inputTokens),"output_tokens":1,"cache_read_input_tokens":\#(cacheReadTokens),"cache_creation_input_tokens":\#(cacheCreationTokens)}}}"#,
+    ],
+    [
+      "event: content_block_start",
+      #"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+    ],
+  ]
+  for delta in deltas {
+    let escaped = String(decoding: try! JSONEncoder().encode(delta), as: UTF8.self)
+    frames.append([
+      "event: content_block_delta",
+      #"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":\#(escaped)}}"#,
+    ])
+  }
+  frames += [
+    ["event: content_block_stop", #"data: {"type":"content_block_stop","index":0}"#],
+    [
+      "event: message_delta",
+      #"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":\#(outputTokens)}}"#,
+    ],
+    ["event: message_stop", #"data: {"type":"message_stop"}"#],
+  ]
+  return sseBody(frames)
+}
+
 /// A complete assistant turn: one thinking block, then a `"Hello!"` text block.
 /// An empty `thinkingDeltas` mimics `display: omitted`, where the thinking
 /// block streams signature-only.
@@ -109,37 +145,53 @@ func redactedThinkingTurnSSE(payload: Data) -> Data {
   ])
 }
 
-/// Serves a canned body for every request and records the last request.
+/// Serves the configured responses in order, repeating the last one, and
+/// records every request it saw.
 final class MockTransport: HTTPTransport {
-  let status: Int
-  let body: Data
-  private let captured = Mutex<URLRequest?>(nil)
-
-  init(status: Int = 200, body: Data) {
-    self.status = status
-    self.body = body
+  private struct CannedResponse {
+    let status: Int
+    let body: Data
   }
 
-  var lastRequest: URLRequest? { captured.withLock { $0 } }
+  private let responses: [CannedResponse]
+  private let recorded = Mutex<[URLRequest]>([])
+
+  init(status: Int = 200, body: Data) {
+    self.responses = [CannedResponse(status: status, body: body)]
+  }
+
+  init(responses: [(status: Int, body: Data)]) {
+    precondition(!responses.isEmpty, "MockTransport needs at least one response")
+    self.responses = responses.map { CannedResponse(status: $0.status, body: $0.body) }
+  }
+
+  var lastRequest: URLRequest? { recorded.withLock { $0.last } }
+  var requests: [URLRequest] { recorded.withLock { $0 } }
 
   func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-    captured.withLock { $0 = request }
-    return (body, response(request))
+    let canned = next(recording: request)
+    return (canned.body, response(request, status: canned.status))
   }
 
   func bytes(
     for request: URLRequest
   ) async throws -> (AsyncThrowingStream<UInt8, Error>, URLResponse) {
-    captured.withLock { $0 = request }
-    let body = self.body
+    let canned = next(recording: request)
     let stream = AsyncThrowingStream<UInt8, Error> { continuation in
-      for byte in body { continuation.yield(byte) }
+      for byte in canned.body { continuation.yield(byte) }
       continuation.finish()
     }
-    return (stream, response(request))
+    return (stream, response(request, status: canned.status))
   }
 
-  private func response(_ request: URLRequest) -> URLResponse {
+  private func next(recording request: URLRequest) -> CannedResponse {
+    recorded.withLock {
+      $0.append(request)
+      return responses[min($0.count - 1, responses.count - 1)]
+    }
+  }
+
+  private func response(_ request: URLRequest, status: Int) -> URLResponse {
     HTTPURLResponse(
       url: request.url!,
       statusCode: status,
@@ -187,143 +239,95 @@ extension LanguageModelExecutorGenerationRequest {
   }
 }
 
-/// Equatable mirror of the channel events the bridge emits, so tests can
-/// assert on whole event sequences — the framework's event types aren't
-/// `Equatable`.
-enum RecordedEvent: Equatable {
-  case responseText(entryID: String?, text: String, tokenCount: Int)
-  case responseCustomSegment(
-    entryID: String?,
-    segmentID: String,
-    content: ClaudeServerToolSegment.Content
-  )
-  case responseUsage(
-    entryID: String?,
-    inputTotal: Int,
-    inputCached: Int,
-    outputTotal: Int,
-    outputReasoning: Int
-  )
-  case reasoningText(entryID: String?, text: String, tokenCount: Int)
-  case reasoningSignature(entryID: String?, signature: Data)
-  case reasoningMetadata(entryID: String?, keys: [String])
-  case toolCallArguments(
-    entryID: String?,
-    id: String,
-    name: String,
-    arguments: String,
-    tokenCount: Int
-  )
-  case other(String)
+/// A `LanguageModel` whose executor is a real `ClaudeExecutor` over an
+/// injected transport, so `LanguageModelSession` exercises the full pipeline
+/// offline — request building, wire auth, SSE parsing, translation, and the
+/// framework's transcript assembly.
+struct StubbedClaudeModel: LanguageModel {
+  typealias Executor = StubbedExecutor
 
-  init(_ event: any LanguageModelExecutorGenerationChannel.Event) {
-    typealias Channel = LanguageModelExecutorGenerationChannel
-    switch event {
-    case let response as Channel.Response:
-      switch response.action {
-      case .appendText(let fragment):
-        self = .responseText(
-          entryID: response.entryID,
-          text: fragment.content,
-          tokenCount: fragment.tokenCount
-        )
-      case .updateCustomSegment(let segment):
-        if let segment = segment as? ClaudeServerToolSegment {
-          self = .responseCustomSegment(
-            entryID: response.entryID,
-            segmentID: segment.id,
-            content: segment.content
-          )
-        } else {
-          self = .other(String(describing: segment))
-        }
+  let transport: MockTransport
+  let auth: AuthMode
+  let capabilitySet: [LanguageModelCapabilities.Capability]
 
-      case .updateUsage(let usage):
-        self = .responseUsage(
-          entryID: response.entryID,
-          inputTotal: usage.input.totalTokenCount,
-          inputCached: usage.input.cachedTokenCount,
-          outputTotal: usage.output.totalTokenCount,
-          outputReasoning: usage.output.reasoningTokenCount
-        )
-      default:
-        self = .other(String(describing: response.action))
-      }
+  init(
+    transport: MockTransport,
+    auth: AuthMode = .apiKey("sk-test"),
+    capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling, .reasoning]
+  ) {
+    self.transport = transport
+    self.auth = auth
+    self.capabilitySet = capabilities
+  }
 
-    case let reasoning as Channel.Reasoning:
-      switch reasoning.action {
-      case .appendText(let fragment):
-        self = .reasoningText(
-          entryID: reasoning.entryID,
-          text: fragment.content,
-          tokenCount: fragment.tokenCount
-        )
-      case .updateSignature(let signature):
-        self = .reasoningSignature(entryID: reasoning.entryID, signature: signature.signature)
-      case .updateMetadata(let metadata):
-        self = .reasoningMetadata(entryID: reasoning.entryID, keys: metadata.values.keys.sorted())
-      default:
-        self = .other(String(describing: reasoning.action))
-      }
+  init(fixture: Data) {
+    self.init(transport: MockTransport(body: fixture))
+  }
 
-    case let toolCalls as Channel.ToolCalls:
-      switch toolCalls.action {
-      case .toolCall(let call):
-        switch call.action {
-        case .appendArguments(let fragment):
-          self = .toolCallArguments(
-            entryID: toolCalls.entryID,
-            id: call.id,
-            name: call.name,
-            arguments: fragment.content,
-            tokenCount: fragment.tokenCount
-          )
-        default:
-          self = .other(String(describing: call.action))
-        }
-      default:
-        self = .other(String(describing: toolCalls.action))
-      }
+  var capabilities: LanguageModelCapabilities {
+    LanguageModelCapabilities(capabilitySet)
+  }
 
-    default:
-      self = .other(String(describing: event))
-    }
+  var executorConfiguration: StubbedExecutor.Configuration {
+    .init(transport: transport, auth: auth)
   }
 }
 
-/// Runs `produce` against a fresh channel and returns every event it sent, in
-/// order. The channel has no finish API, so a sentinel response event marks
-/// the end of production and terminates the drain. Errors from `produce`
-/// surface after the drain, mirroring how the framework consumes the channel.
-func recordedEvents(
-  _ produce: @escaping @Sendable (LanguageModelExecutorGenerationChannel) async throws -> Void
-) async throws -> [RecordedEvent] {
-  let channel = LanguageModelExecutorGenerationChannel()
-  let sentinelID = "test.sentinel"
+struct StubbedExecutor: LanguageModelExecutor {
+  typealias Model = StubbedClaudeModel
 
-  let producer = Task {
-    let sentinel: LanguageModelExecutorGenerationChannel.Response = .response(
-      entryID: sentinelID,
-      action: .appendText("", tokenCount: 0)
+  struct Configuration: Hashable, Sendable {
+    let transport: MockTransport
+    let auth: AuthMode
+
+    static func == (a: Self, b: Self) -> Bool {
+      a.transport === b.transport && a.auth == b.auth
+    }
+
+    func hash(into hasher: inout Hasher) {
+      hasher.combine(ObjectIdentifier(transport))
+      hasher.combine(auth)
+    }
+  }
+
+  private let configuration: Configuration
+  private let inner: ClaudeExecutor
+
+  init(configuration: Configuration) throws {
+    self.configuration = configuration
+    self.inner = ClaudeExecutor(
+      configuration: .init(
+        model: .sonnet5,
+        baseURL: URL(string: "https://stub.invalid")!,
+        authMode: configuration.auth,
+        timeout: 5
+      ),
+      transport: configuration.transport
     )
-    do {
-      try await produce(channel)
-    } catch {
-      await channel.send(sentinel)
-      throw error
-    }
-    await channel.send(sentinel)
   }
 
-  var events: [RecordedEvent] = []
-  for try await event in channel {
-    if let response = event as? LanguageModelExecutorGenerationChannel.Response,
-      response.entryID == sentinelID
-    {
-      break
-    }
-    events.append(RecordedEvent(event))
+  func respond(
+    to request: LanguageModelExecutorGenerationRequest,
+    model: StubbedClaudeModel,
+    streamingInto channel: LanguageModelExecutorGenerationChannel
+  ) async throws {
+    try await inner.respond(
+      to: request,
+      model: ClaudeLanguageModel(name: .sonnet5, auth: configuration.auth),
+      streamingInto: channel
+    )
   }
-  try await producer.value
-  return events
+}
+
+/// Server-tool segments of every response entry in the transcript, in order.
+func serverToolSegments(in transcript: Transcript) -> [ClaudeServerToolSegment] {
+  transcript
+    .flatMap { entry -> [Transcript.Segment] in
+      if case .response(let response) = entry { return response.segments }
+      return []
+    }
+    .compactMap { segment in
+      if case .custom(let custom) = segment { return custom as? ClaudeServerToolSegment }
+      return nil
+    }
 }

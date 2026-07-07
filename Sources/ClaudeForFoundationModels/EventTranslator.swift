@@ -220,7 +220,7 @@ struct EventTranslator: Sendable {
   /// usage only at message boundaries, so no real per-delta count exists, and
   /// a count of 0 suppresses partial-snapshot delivery. Authoritative totals
   /// still arrive via `updateUsage` at `message_delta`.
-  private static let deltaTokenCount = 1
+  static let deltaTokenCount = 1
 
   private func send(
     _ delta: StreamEvent.Delta,

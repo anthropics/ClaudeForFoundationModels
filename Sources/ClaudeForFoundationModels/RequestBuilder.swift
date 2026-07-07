@@ -345,9 +345,9 @@ enum RequestBuilder {
     switch options.samplingMode?.kind {
     case .greedy:
       req.temperature = 0
-    case .top(let k, _):  // the API has no sampling-seed parameter
+    case .randomTopK(let k, _):  // the API has no sampling-seed parameter
       req.topK = k
-    case .nucleus(let threshold, _):
+    case .randomProbabilityThreshold(let threshold, _):
       req.topP = threshold
     case nil:
       break
