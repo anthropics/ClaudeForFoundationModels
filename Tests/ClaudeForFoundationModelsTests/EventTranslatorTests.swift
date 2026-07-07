@@ -174,12 +174,7 @@ import Testing
     #expect(segments.count == 1)
     let segment = try #require(segments.first)
     #expect(segment.id == "srv_2")
-    guard case .webSearch(let search) = segment.content else {
-      Issue.record("expected webSearch, got \(segment.content)")
-      return
-    }
-    #expect(search.query == "weather")
-    #expect(search.outcome == nil)
+    #expect(segment.content == .webSearch(.init(query: "weather")))
   }
 
   @Test func `server tool use and result merge into one transcript segment`() async throws {
@@ -235,19 +230,21 @@ import Testing
     #expect(segments.count == 1)
     let segment = try #require(segments.first)
     #expect(segment.id == "srv_1")
-    guard case .webSearch(let search) = segment.content else {
-      Issue.record("expected webSearch, got \(segment.content)")
-      return
-    }
-    #expect(search.query == "weather")
-    guard case .results(let hits)? = search.outcome else {
-      Issue.record("expected results outcome, got \(String(describing: search.outcome))")
-      return
-    }
-    #expect(hits.count == 1)
-    #expect(hits[0].url == URL(string: "https://weather.gov"))
-    #expect(hits[0].title == "NWS")
-    #expect(hits[0].pageAge == "June 7, 2026")
+    #expect(
+      segment.content
+        == .webSearch(
+          .init(
+            query: "weather",
+            outcome: .results([
+              .init(
+                url: URL(string: "https://weather.gov")!,
+                title: "NWS",
+                pageAge: "June 7, 2026"
+              )
+            ])
+          )
+        )
+    )
   }
 
   @Test func `unknown events and deltas are ignored, not thrown`() async throws {
