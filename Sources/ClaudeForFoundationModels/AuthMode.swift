@@ -19,8 +19,6 @@ import Foundation
 /// executors. Hash on stable identifiers (the key itself), never on tokens that
 /// rotate.
 ///
-/// A no-backend mode that attests each install via App Attest is coming soon;
-/// until then, ``proxied`` is the production path that keeps keys off the device.
 public enum AuthMode: Hashable, Sendable {
   /// Developer-supplied API key. Bundled keys are extractable from a shipping
   /// app; for production, use ``proxied(headers:)``.
@@ -33,4 +31,20 @@ public enum AuthMode: Hashable, Sendable {
   /// These headers are fixed at construction. Per-request values (a rotating
   /// user token) belong in a future provider-based mode, not here.
   case proxied(headers: [String: String])
+  /// App Attest. Register the app in the Anthropic console to obtain a
+  /// `clientID`; each install then proves it's a genuine, unmodified copy
+  /// via the Secure Enclave, and usage is billed to the developer's
+  /// workspace. This works without a developer backend, a browser flow,
+  /// or any human sign-in.
+  ///
+  /// Requires a physical device: simulators and hardware without a Secure
+  /// Enclave throw ``ClaudeError/attestationUnsupported``.
+  ///
+  /// A client ID attests against a single `baseURL` per process: the first
+  /// session created for it fixes the host, and later use of the same
+  /// client ID with a different `baseURL` fails with
+  /// ``ClaudeError/attestationFailed`` when that configuration first
+  /// serves a request or runs
+  /// ``ClaudeLanguageModel/authenticateIfNeeded()``.
+  case appAttest(clientID: String)
 }

@@ -145,12 +145,32 @@ func redactedThinkingTurnSSE(payload: Data) -> Data {
   ])
 }
 
+/// Canned App Attest wire bodies shared across suites.
+enum WireFixtures {
+  /// 32 bytes of 0x01, the golden-vector challenge.
+  static let challengeBody = Data(
+    #"{"challenge":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","expires_in":300}"#.utf8
+  )
+
+  /// The pre-issued challenge is the same nonce as `challengeBody`.
+  static func oauthBody(token: String, nextChallengeExpiresIn: Double? = nil) -> Data {
+    var json = #"{"access_token":"\#(token)","token_type":"Bearer","expires_in":3600"#
+    if let nextChallengeExpiresIn {
+      json += #","next_challenge":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","#
+      json += #""next_challenge_expires_in":\#(nextChallengeExpiresIn)"#
+    }
+    json += "}"
+    return Data(json.utf8)
+  }
+}
+
 /// Serves the configured responses in order, repeating the last one, and
 /// records every request it saw.
 final class MockTransport: HTTPTransport {
   private struct CannedResponse {
     let status: Int
     let body: Data
+    var headers: [String: String]? = nil
   }
 
   private let responses: [CannedResponse]
@@ -160,9 +180,15 @@ final class MockTransport: HTTPTransport {
     self.responses = [CannedResponse(status: status, body: body)]
   }
 
-  init(responses: [(status: Int, body: Data)]) {
+  convenience init(responses: [(status: Int, body: Data)]) {
+    self.init(responses: responses.map { ($0.status, $0.body, nil) })
+  }
+
+  init(responses: [(status: Int, body: Data, headers: [String: String]?)]) {
     precondition(!responses.isEmpty, "MockTransport needs at least one response")
-    self.responses = responses.map { CannedResponse(status: $0.status, body: $0.body) }
+    self.responses = responses.map {
+      CannedResponse(status: $0.status, body: $0.body, headers: $0.headers)
+    }
   }
 
   var lastRequest: URLRequest? { recorded.withLock { $0.last } }
@@ -170,7 +196,7 @@ final class MockTransport: HTTPTransport {
 
   func data(for request: URLRequest) async throws -> (Data, URLResponse) {
     let canned = next(recording: request)
-    return (canned.body, response(request, status: canned.status))
+    return (canned.body, response(request, canned))
   }
 
   func bytes(
@@ -181,7 +207,7 @@ final class MockTransport: HTTPTransport {
       for byte in canned.body { continuation.yield(byte) }
       continuation.finish()
     }
-    return (stream, response(request, status: canned.status))
+    return (stream, response(request, canned))
   }
 
   private func next(recording request: URLRequest) -> CannedResponse {
@@ -191,12 +217,12 @@ final class MockTransport: HTTPTransport {
     }
   }
 
-  private func response(_ request: URLRequest, status: Int) -> URLResponse {
+  private func response(_ request: URLRequest, _ canned: CannedResponse) -> URLResponse {
     HTTPURLResponse(
       url: request.url!,
-      statusCode: status,
+      statusCode: canned.status,
       httpVersion: "HTTP/1.1",
-      headerFields: nil
+      headerFields: canned.headers
     )!
   }
 }
@@ -248,15 +274,18 @@ struct StubbedClaudeModel: LanguageModel {
 
   let transport: MockTransport
   let auth: AuthMode
+  let attestSession: AppAttestSession?
   let capabilitySet: [LanguageModelCapabilities.Capability]
 
   init(
     transport: MockTransport,
     auth: AuthMode = .apiKey("sk-test"),
+    attestSession: AppAttestSession? = nil,
     capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling, .reasoning]
   ) {
     self.transport = transport
     self.auth = auth
+    self.attestSession = attestSession
     self.capabilitySet = capabilities
   }
 
@@ -269,7 +298,7 @@ struct StubbedClaudeModel: LanguageModel {
   }
 
   var executorConfiguration: StubbedExecutor.Configuration {
-    .init(transport: transport, auth: auth)
+    .init(transport: transport, auth: auth, attestSession: attestSession)
   }
 }
 
@@ -279,9 +308,10 @@ struct StubbedExecutor: LanguageModelExecutor {
   struct Configuration: Hashable, Sendable {
     let transport: MockTransport
     let auth: AuthMode
+    let attestSession: AppAttestSession?
 
     static func == (a: Self, b: Self) -> Bool {
-      a.transport === b.transport && a.auth == b.auth
+      a.transport === b.transport && a.auth == b.auth && a.attestSession === b.attestSession
     }
 
     func hash(into hasher: inout Hasher) {
@@ -302,7 +332,8 @@ struct StubbedExecutor: LanguageModelExecutor {
         authMode: configuration.auth,
         timeout: 5
       ),
-      transport: configuration.transport
+      transport: configuration.transport,
+      attestSession: configuration.attestSession
     )
   }
 

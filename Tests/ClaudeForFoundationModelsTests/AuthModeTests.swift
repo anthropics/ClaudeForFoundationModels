@@ -13,6 +13,11 @@ import Testing
     #expect(AuthMode.proxied(headers: [:]) != AuthMode.apiKey("k"))
   }
 
+  @Test func `appAttest identity is the client id`() {
+    #expect(AuthMode.appAttest(clientID: "a") == AuthMode.appAttest(clientID: "a"))
+    #expect(AuthMode.appAttest(clientID: "a") != AuthMode.appAttest(clientID: "b"))
+  }
+
   /// Proxy headers must participate in the executor cache key, so two models
   /// that differ only by their proxy headers get distinct cached executors.
   @Test func `proxy headers drive the executor configuration identity`() {

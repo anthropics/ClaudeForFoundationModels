@@ -75,10 +75,21 @@ public struct ClaudeLanguageModel: Sendable {
     self.timeout = timeout
   }
 
-  /// Idempotent. Currently a no-op — the API-key and proxy modes need no
-  /// preparation. Kept as part of the protocol surface so a future interactive
-  /// auth mode has a slot.
-  public func authenticateIfNeeded() async throws {}
+  /// Idempotent. Under ``AuthMode/appAttest(clientID:)``, performs the
+  /// first-run device attestation so its multi-second cost and any failure
+  /// surface here instead of on the first request. A no-op for every other
+  /// mode.
+  public func authenticateIfNeeded() async throws {
+    guard case .appAttest = authMode else { return }
+    let configuration = executorConfiguration
+    do {
+      guard let session = try ClaudeExecutor.makeAttestSession(for: configuration)
+      else { throw ClaudeError.attestationUnsupported }
+      try await session.attestIfNeeded()
+    } catch {
+      throw ErrorMapper.map(error, usesAppAttest: true)
+    }
+  }
 
   public static let defaultBaseURL = URL(string: "https://api.anthropic.com")!
 }

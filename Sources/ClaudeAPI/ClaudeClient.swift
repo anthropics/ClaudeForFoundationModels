@@ -138,8 +138,21 @@ package struct ClaudeClient: Sendable {
     if body.count > maxBodyExcerpt {
       excerpt += "… [truncated, \(body.count) bytes total]"
     }
+    // Without an envelope the status is the only classification signal.
+    // Intermediaries (proxies, CDNs) answer auth and rate-limit failures
+    // with non-JSON bodies.
+    let kind: APIError.Kind =
+      switch http.statusCode {
+      case 401: .authentication
+      case 403: .permission
+      case 404: .notFound
+      case 413: .requestTooLarge
+      case 429: .rateLimit
+      case 529: .overloaded
+      default: .api
+      }
     throw APIError(
-      kind: .api,
+      kind: kind,
       message: "HTTP \(http.statusCode): \(excerpt)",
       requestID: http.value(forHTTPHeaderField: "request-id")
     )

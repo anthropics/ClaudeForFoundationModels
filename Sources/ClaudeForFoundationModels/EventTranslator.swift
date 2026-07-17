@@ -42,10 +42,36 @@ struct EventTranslator: Sendable {
     case serverToolUse(id: String, name: String, initialInput: JSONValue, accumulatedInput: String)
   }
 
+  /// Relays all channel writes so the first-write callback is handled in
+  /// one place instead of at every send site.
+  private final class ChannelSink {
+    private let channel: LanguageModelExecutorGenerationChannel
+    private var pendingFirstWrite: (@Sendable () -> Void)?
+
+    init(
+      _ channel: LanguageModelExecutorGenerationChannel,
+      onFirstWrite: (@Sendable () -> Void)?
+    ) {
+      self.channel = channel
+      self.pendingFirstWrite = onFirstWrite
+    }
+
+    func send(_ event: LanguageModelExecutorGenerationChannel.Event) async {
+      pendingFirstWrite?()
+      pendingFirstWrite = nil
+      await channel.send(event)
+    }
+  }
+
+  /// - Parameter onFirstChannelWrite: Invoked once, immediately before the
+  ///   first write to the channel. Events that write nothing (`ping`,
+  ///   `message_start`) don't trigger it.
   func translate(
     _ events: AsyncThrowingStream<StreamEvent, Error>,
-    into channel: LanguageModelExecutorGenerationChannel
+    into channel: LanguageModelExecutorGenerationChannel,
+    onFirstChannelWrite: (@Sendable () -> Void)? = nil
   ) async throws {
+    let channel = ChannelSink(channel, onFirstWrite: onFirstChannelWrite)
     var blocks: [Int: BlockKind] = [:]
     /// In-flight server-tool calls by tool-use id, so a result updates the
     /// same segment its call created.
@@ -225,7 +251,7 @@ struct EventTranslator: Sendable {
   private func send(
     _ delta: StreamEvent.Delta,
     for kind: BlockKind?,
-    to channel: LanguageModelExecutorGenerationChannel
+    to channel: ChannelSink
   ) async throws {
     switch (delta, kind) {
     case (.text(let t), _):

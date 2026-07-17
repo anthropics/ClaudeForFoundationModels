@@ -24,7 +24,7 @@ Use Claude as a server-side language model through Apple's [Foundation Models](h
 
 - iOS 27, macOS 27, visionOS 27, or watchOS 27 (beta) — the OS releases whose Foundation Models framework supports server-side language models.
 - Xcode 27 (beta).
-- An Anthropic API key for development. See [Authentication](#authentication) for production options.
+- A credential: an App Attest client ID from the Anthropic console, or an API key for simulator development. See [Authentication](#authentication).
 
 ## Installation
 
@@ -118,13 +118,20 @@ The level must be one the model accepts — each model declares which of the fiv
 Set the credential with the `auth:` parameter.
 
 ```swift
-// Development. A bundled key is extractable from a shipping app — use one of
-// the production options below before release.
+// Recommended. Register the app in the Anthropic console to get a client ID;
+// each install then proves it's a genuine, unmodified copy via App Attest,
+// and usage bills to your workspace. The app ships no key and needs no
+// developer backend. Works in development and production; requires a
+// physical device.
+ClaudeLanguageModel(name: .sonnet5, auth: .appAttest(clientID: "clid_..."))
+
+// An API key is useful for simulator iteration. A bundled key is
+// extractable from a shipping app, so don't release with one.
 ClaudeLanguageModel(name: .sonnet5, auth: .apiKey("..."))
 
-// Production via your own backend. The relay at `baseURL` adds the credential
-// server-side; the app ships no key. `headers` are sent on every request so the
-// proxy can authorize the caller — pass `[:]` if it needs none.
+// Your own backend. The relay at `baseURL` adds the credential server-side;
+// the app ships no key. `headers` are sent on every request so the proxy
+// can authorize the caller — pass `[:]` if it needs none.
 ClaudeLanguageModel(
   name: .sonnet5,
   auth: .proxied(headers: ["X-App-Token": "..."]),
@@ -132,7 +139,40 @@ ClaudeLanguageModel(
 )
 ```
 
-**Coming soon:** a production mode that doesn't require running your own backend — each app install authenticates with App Attest and usage is billed to your Anthropic workspace. Until that ships, use `.apiKey` for development and `.proxied` for production.
+### App Attest
+
+`.appAttest` needs three things:
+
+- **A registered app.** Register the app's team ID and bundle ID in the
+  Anthropic console. The client ID it issues is public configuration that is
+  safe to include in the app binary. App registration is currently rolling
+  out and can be found
+  [here](https://platform.claude.com/settings/workspaces/default/app-integrations)
+  once available.
+- **The App Attest capability.** Add the App Attest entitlement to the app
+  (`com.apple.developer.devicecheck.appattest-environment`); this requires an
+  explicitly registered App ID.
+- **A physical device.** Simulators and hardware without a Secure Enclave
+  throw `ClaudeError.attestationUnsupported` — keep `.apiKey` for simulator
+  iteration.
+
+The first request on a fresh install attests the device with Apple (a few
+seconds, once per install). Front that cost at app launch instead of paying
+it on the first prompt:
+
+```swift
+try await model.authenticateIfNeeded()
+```
+
+This throws if attestation fails — an unregistered client ID, an unsupported
+device — so the app learns before the user's first prompt does.
+`session.prewarm()` also starts attestation, but as a fire-and-forget hint
+with no error reporting; prefer `authenticateIfNeeded()` when the app should
+react to failure. After first run, requests reuse a cached short-lived token
+from the Keychain, and renewing an expired token costs only a local Secure
+Enclave signature and one short round trip (two after an app relaunch);
+renewal never repeats the attestation.
+Credentials are device-bound and never sync or back up.
 
 ## Streaming
 

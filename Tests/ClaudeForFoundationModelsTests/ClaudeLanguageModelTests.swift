@@ -7,6 +7,10 @@ import Testing
 
 @testable import ClaudeForFoundationModels
 
+#if canImport(DeviceCheck)
+import DeviceCheck
+#endif
+
 @Suite struct ClaudeLanguageModelTests {
   @Test func `advertised capabilities follow the model's declared capabilities`() {
     let full = ClaudeLanguageModel(name: .sonnet4_6, auth: .apiKey("k"))
@@ -34,4 +38,27 @@ import Testing
     let model = ClaudeLanguageModel(name: .opus4_8, auth: .apiKey("k"), fixedEffort: .max)
     #expect(model.executorConfiguration.fixedEffort == .max)
   }
+  @Test func `authenticateIfNeeded is a no-op for api key auth`() async throws {
+    let model = ClaudeLanguageModel(name: .sonnet4_6, auth: .apiKey("k"))
+    try await model.authenticateIfNeeded()
+  }
+
+  #if canImport(DeviceCheck)
+  // Runs only where App Attest is unavailable; on capable hardware this
+  // would attempt a live Apple attestation.
+  @Test(.enabled(if: !DCAppAttestService.shared.isSupported))
+  func `authenticateIfNeeded surfaces attestation failure as a public error`() async {
+    let model = ClaudeLanguageModel(
+      name: .sonnet4_6,
+      auth: .appAttest(clientID: "clid_authenticate_\(UUID().uuidString)")
+    )
+    do {
+      try await model.authenticateIfNeeded()
+      Issue.record("expected authenticateIfNeeded to throw off-device")
+    } catch {
+      #expect(error is ClaudeError)
+    }
+  }
+  #endif
+
 }

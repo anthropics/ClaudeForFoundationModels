@@ -187,6 +187,19 @@ import Testing
     #expect(error.kind == .overloaded)
   }
 
+  @Test func `a non-envelope error body classifies by HTTP status`() async throws {
+    let transport = MockTransport(status: 401, body: Data("<html>denied</html>".utf8))
+
+    let error = try await #require(throws: APIError.self) {
+      for try await _ in client(transport)
+        .stream(
+          MessagesRequest(model: "m", messages: [.user("hi")])
+        )
+      {}
+    }
+    #expect(error.kind == .authentication)
+  }
+
   @Test func `stream maps a 4xx error body instead of parsing it as SSE`() async throws {
     let transport = MockTransport(
       status: 400,
