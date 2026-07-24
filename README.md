@@ -144,11 +144,9 @@ ClaudeLanguageModel(
 `.appAttest` needs three things:
 
 - **A registered app.** Register the app's team ID and bundle ID in the
-  Anthropic console. The client ID it issues is public configuration that is
-  safe to include in the app binary. App registration is currently rolling
-  out and can be found
-  [here](https://platform.claude.com/settings/workspaces/default/app-integrations)
-  once available.
+  [Anthropic console](https://platform.claude.com/settings/workspaces/default/app-integrations).
+  The client ID it issues is public configuration that is safe to include in
+  the app binary.
 - **The App Attest capability.** Add the App Attest entitlement to the app
   (`com.apple.developer.devicecheck.appattest-environment`); this requires an
   explicitly registered App ID.
