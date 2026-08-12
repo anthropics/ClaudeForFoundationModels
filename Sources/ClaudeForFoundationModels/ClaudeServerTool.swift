@@ -28,6 +28,13 @@ public enum ClaudeServerTool: Hashable, Sendable {
   /// Sandboxed code execution (Python, bash, file ops).
   case codeExecution
 
+  /// The tools' names on the wire, in requests and in the model's calls.
+  enum Name {
+    static let webSearch = "web_search"
+    static let webFetch = "web_fetch"
+    static let codeExecution = "code_execution"
+  }
+
   /// Domain policy for the web tools — an allowlist or a blocklist, never
   /// both (the API rejects requests that set both).
   public enum DomainFilter: Hashable, Sendable {
@@ -50,17 +57,17 @@ extension ClaudeServerTool {
     case .webSearch(let domains, let maxUses):
       .init(
         serverType: "web_search_20260209",
-        name: "web_search",
+        name: Name.webSearch,
         config: config(domains: domains, maxUses: maxUses)
       )
     case .webFetch(let domains, let maxUses):
       .init(
         serverType: "web_fetch_20260209",
-        name: "web_fetch",
+        name: Name.webFetch,
         config: config(domains: domains, maxUses: maxUses)
       )
     case .codeExecution:
-      .init(serverType: "code_execution_20260120", name: "code_execution")
+      .init(serverType: "code_execution_20260120", name: Name.codeExecution)
     }
   }
 

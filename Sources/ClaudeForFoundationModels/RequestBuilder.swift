@@ -22,7 +22,6 @@ enum RequestBuilder {
     serverTools: Set<ClaudeServerTool> = []
   ) throws -> Built {
     var system: String?
-    var messages: [Message] = []
 
     // Replayed thinking blocks are only required during tool use with
     // thinking active, and prior-turn thinking may always be omitted — so
@@ -32,71 +31,70 @@ enum RequestBuilder {
     // it, so thinking yields for that request.
     let thinkingConfig = toolChoice == .any ? nil : thinking(for: model)
 
+    // The framework records one model turn as several consecutive entries
+    // (reasoning, response, tool calls); the API wants each turn back as one
+    // assistant message.
+    var pieces: [Piece] = []
+    var turn: [Transcript.Entry] = []
+    func closeTurn() {
+      if !turn.isEmpty { pieces.append(.turn(turn)) }
+      turn = []
+    }
     for entry in request.transcript {
       switch entry {
+      case .response, .reasoning, .toolCalls:
+        turn.append(entry)
+
       case .instructions(let i):
+        closeTurn()
         system = (system.map { $0 + "\n\n" } ?? "") + text(of: i.segments)
 
       case .prompt(let p):
-        messages.append(.init(role: .user, content: try contentBlocks(from: p.segments)))
-
-      case .reasoning(let r):
-        guard thinkingConfig != nil else { continue }
-        // Replayed as a thinking block so the API can verify the signature
-        // and keep the thought chain intact across tool-use turns. Redacted
-        // thoughts (marked by the translator) go back verbatim as
-        // redacted_thinking. An unmarked entry with empty text is a thinking
-        // block whose display was omitted — it must echo back as received;
-        // reshaping it as redacted_thinking corrupts the payload.
-        // Thinking text replays as the concatenation it streamed as — an
-        // injected separator would modify the block, which the API rejects.
-        let thought = text(of: r.segments, separator: "")
-        let isRedacted = (r.metadata[redactedThinkingMetadataKey] as? Bool) == true
-        let block: ContentBlock =
-          if isRedacted, let redacted = r.signature {
-            .redactedThinking(redacted)
-          } else {
-            .thinking(thought, signature: r.signature?.base64EncodedString())
-          }
-        messages.append(.init(role: .assistant, content: [block]))
-
-      case .toolCalls(let calls):
-        let blocks: [ContentBlock] = calls.map {
-          .toolUse(
-            id: $0.id,
-            name: $0.toolName,
-            input: jsonValue(from: $0.arguments)
-          )
-        }
-        messages.append(.init(role: .assistant, content: blocks))
+        closeTurn()
+        pieces.append(.user(.init(role: .user, content: try contentBlocks(from: p.segments))))
 
       case .toolOutput(let out):
+        closeTurn()
         // Block content, not flattened text — tool results may carry images.
         let blocks = try contentBlocks(from: out.segments)
-        messages.append(
-          .init(
-            role: .user,
-            content: [
-              .toolResult(
-                toolUseID: out.id,
-                content: blocks.isEmpty ? [.text("")] : blocks
-              )
-            ]
+        pieces.append(
+          .toolResult(
+            id: out.id,
+            .init(
+              role: .user,
+              content: [
+                .toolResult(toolUseID: out.id, content: blocks.isEmpty ? [.text("")] : blocks)
+              ]
+            )
           )
         )
-
-      case .response(let r):
-        messages.append(.init(role: .assistant, content: try contentBlocks(from: r.segments)))
 
       @unknown default:
         break
       }
     }
+    closeTurn()
 
-    // The framework records reasoning, tool calls, and response text as
-    // separate transcript entries; the API wants them as one assistant turn —
-    // on replay a thinking block must sit in the same message as the
-    // tool_use blocks it preceded.
+    let pairing = ToolPairing(pieces)
+    var messages: [Message] = []
+    for piece in pieces {
+      switch piece {
+      case .user(let message):
+        messages.append(message)
+      case .toolResult(let id, let message):
+        if pairing.accepts(resultOfClientCall: id) { messages.append(message) }
+      case .turn(let entries):
+        let content = try assistantContent(
+          of: entries,
+          replayThinking: thinkingConfig != nil,
+          pairing: pairing
+        )
+        if !content.isEmpty { messages.append(.init(role: .assistant, content: content)) }
+      }
+    }
+    // Roles must alternate: parallel tool calls yield one tool-output entry
+    // each, and a turn or tool result that replays as nothing leaves its
+    // neighbors adjacent.
     messages = mergingConsecutiveSameRole(messages)
 
     // Server tools are sorted for a stable wire order — the prompt cache
@@ -197,6 +195,194 @@ enum RequestBuilder {
     }
   }
 
+  // MARK: - Assistant turns
+
+  /// The transcript regrouped the way the API sees it: the user's messages,
+  /// and one model turn — a stretch of consecutive model entries — per
+  /// assistant message.
+  private enum Piece {
+    case user(Message)
+    case toolResult(id: String, Message)
+    case turn([Transcript.Entry])
+  }
+
+  /// One assistant message from the entries of a turn: their recorded blocks
+  /// in the order the API sent them, with any entry that has no record (a
+  /// transcript the app assembled, an entry cut off before its first block
+  /// completed) rebuilt from what the framework holds.
+  ///
+  /// Recorded blocks sort by the position they carry; entries recorded in a
+  /// different API turn (the transcript left two turns side by side) come
+  /// after everything before them; rebuilt blocks follow whatever preceded
+  /// them; text cut off mid-block was the last thing its turn produced.
+  private static func assistantContent(
+    of entries: [Transcript.Entry],
+    replayThinking: Bool,
+    pairing: ToolPairing
+  ) throws -> [ContentBlock] {
+    typealias Ordered = (order: (group: Int, rank: Double), block: ContentBlock)
+    var ordered: [Ordered] = []
+    var group = 0
+    var turn: String?
+    var latest = -1.0
+
+    func add(_ record: TurnRecord, orRebuild rebuild: () throws -> [ContentBlock]) rethrows {
+      guard !record.isEmpty else {
+        ordered += try rebuild().map { ((group, latest + 0.5), $0) }
+        return
+      }
+      if let turn, turn != record.turn { (group, latest) = (group + 1, -1) }
+      turn = record.turn
+      for block in record.blocks {
+        if let content = replayable(block, replayThinking: replayThinking, pairing: pairing) {
+          ordered.append(((group, Double(block.position)), content))
+        }
+        latest = max(latest, Double(block.position))
+      }
+    }
+
+    for entry in entries {
+      switch entry {
+      case .response(let response):
+        let record = TurnRecord(metadata: response.metadata)
+        try add(record) { try contentBlocks(from: response.segments) }
+        if !record.isEmpty {
+          ordered += unfinishedText(of: response, beyond: record).map { ((group, .infinity), $0) }
+        }
+      case .reasoning(let reasoning):
+        add(TurnRecord(metadata: reasoning.metadata)) {
+          // Only a signed thought is worth anything to the API, and only on
+          // a request that thinks.
+          guard replayThinking, let signature = reasoning.signature, !signature.isEmpty else {
+            return []
+          }
+          let thought = text(of: reasoning.segments, separator: "")
+          return [.thinking(thought, signature: signature.base64EncodedString())]
+        }
+      case .toolCalls(let calls):
+        for call in calls {
+          add(TurnRecord(metadata: call.metadata)) {
+            guard pairing.accepts(clientCall: call.id) else { return [] }
+            return [.toolUse(id: call.id, name: call.toolName, input: toolInput(call.arguments))]
+          }
+        }
+      default:
+        break
+      }
+    }
+    // `sorted` is stable, so blocks sharing an order keep entry order.
+    let content = ordered.sorted { $0.order < $1.order }.map(\.block)
+    // A turn pruned down to its thoughts alone has nothing the API needs;
+    // earlier turns' thinking may always be omitted.
+    let hasSubstance = content.contains { block in
+      switch block {
+      case .thinking: false
+      case .raw(let json):
+        switch TurnRecord.Kind(json) {
+        case .thinking, .redactedThinking: false
+        default: true
+        }
+      default: true
+      }
+    }
+    return hasSubstance ? content : []
+  }
+
+  private static func replayable(
+    _ block: TurnRecord.Block,
+    replayThinking: Bool,
+    pairing: ToolPairing
+  ) -> ContentBlock? {
+    let accepted =
+      switch block.kind {
+      case .thinking, .redactedThinking: replayThinking
+      case .toolUse(let id, _): pairing.accepts(clientCall: id)
+      case .serverToolUse(let id, _, _): pairing.accepts(serverCall: id)
+      case .serverToolResult(_, let toolUseID, _): pairing.accepts(resultOf: toolUseID)
+      case .text, .other: true
+      }
+    return accepted ? .raw(block.json) : nil
+  }
+
+  /// The answer text that streamed after the response's last completed text
+  /// block — there is some only when generation was stopped mid-answer. Each
+  /// text block streams into a segment of its own, so it is whatever the
+  /// prose segments (those not holding a server tool call's place) hold past
+  /// the recorded ones.
+  private static func unfinishedText(
+    of response: Transcript.Response,
+    beyond record: TurnRecord
+  ) -> [ContentBlock] {
+    var recordedCount = 0
+    var placeholderIDs: Set<String> = []
+    for block in record.blocks {
+      switch block.kind {
+      case .text: recordedCount += 1
+      case .serverToolUse(let id, _, _): placeholderIDs.insert(id)
+      default: break
+      }
+    }
+    let pending = response.segments
+      .compactMap { segment -> String? in
+        guard case .text(let text) = segment, !placeholderIDs.contains(text.id) else { return nil }
+        return text.content
+      }
+      .dropFirst(recordedCount)
+      .joined()
+    return pending.contains { !$0.isWhitespace } ? [.text(pending)] : []
+  }
+
+  /// Which tool blocks the API will accept back. A call — server-side or
+  /// client — needs its result somewhere in the transcript; a result needs
+  /// its call. The one exception is a server-side call in the turn whose
+  /// client tool outputs this request returns: the API runs it on receipt,
+  /// so it goes back unanswered. Anything unpaired (a turn stopped before
+  /// the result arrived or the tool ran, a call the app trimmed from
+  /// history) replays as nothing rather than failing every later request.
+  private struct ToolPairing {
+    private var serverCalls: Set<String> = []
+    private var clientCalls: Set<String> = []
+    private var answered: Set<String> = []
+    private var pendingServerCalls: Set<String> = []
+
+    init(_ pieces: [Piece]) {
+      var trailingResults = 0
+      for piece in pieces {
+        switch piece {
+        case .turn(let entries):
+          trailingResults = 0
+          for entry in entries {
+            if case .toolCalls(let calls) = entry { clientCalls.formUnion(calls.map(\.id)) }
+            for block in TurnRecord(of: entry).blocks {
+              switch block.kind {
+              case .serverToolUse(let id, _, _): serverCalls.insert(id)
+              case .serverToolResult(_, let toolUseID, _): answered.insert(toolUseID)
+              default: break
+              }
+            }
+          }
+        case .toolResult(let id, _):
+          trailingResults += 1
+          answered.insert(id)
+        case .user:
+          trailingResults = 0
+        }
+      }
+      guard trailingResults > 0, case .turn(let continued)? = pieces.dropLast(trailingResults).last
+      else { return }
+      for block in continued.flatMap({ TurnRecord(of: $0).blocks }) {
+        if case .serverToolUse(let id, _, _) = block.kind { pendingServerCalls.insert(id) }
+      }
+    }
+
+    func accepts(clientCall id: String) -> Bool { answered.contains(id) }
+    func accepts(serverCall id: String) -> Bool {
+      answered.contains(id) || pendingServerCalls.contains(id)
+    }
+    func accepts(resultOf id: String) -> Bool { serverCalls.contains(id) }
+    func accepts(resultOfClientCall id: String) -> Bool { clientCalls.contains(id) }
+  }
+
   // MARK: - Private
 
   /// Folds consecutive same-role messages into one message with the content
@@ -218,7 +404,7 @@ enum RequestBuilder {
       switch $0 {
       case .text(let t): t.content
       case .structure(let s): s.content.jsonString
-      case .attachment, .custom: nil
+      case .attachment: nil
       @unknown default: nil
       }
     }
@@ -237,23 +423,14 @@ enum RequestBuilder {
           [try ClaudeImage(cgImage: image.cgImage, orientation: image.orientation).contentBlock]
         @unknown default: []
         }
-      case .custom(let segment):
-        customBlocks(from: segment)
       @unknown default: []
       }
     }
   }
 
-  /// Server-tool activity replays as the wire blocks it came from — the API
-  /// expects prior `server_tool_use` / `*_tool_result` blocks back (search
-  /// results carry encrypted content the model can cite on later turns).
-  /// Other custom segments fall back to their text rendering.
-  private static func customBlocks(from segment: any Transcript.CustomSegment) -> [ContentBlock] {
-    guard let serverTool = segment as? ClaudeServerToolSegment else {
-      let text = String(describing: segment)
-      return text.isEmpty ? [] : [.text(text)]
-    }
-    return serverTool.content.wireBlocks(id: serverTool.id)
+  private static func toolInput(_ arguments: GeneratedContent) -> JSONValue {
+    let input = JSONValue(arguments)
+    return if case .object = input { input } else { [:] }
   }
 
   private static func toolDefinition(_ def: Transcript.ToolDefinition) -> ToolDefinition {
@@ -262,10 +439,6 @@ enum RequestBuilder {
       description: def.description,
       inputSchema: jsonSchema(from: def.parameters)
     )
-  }
-
-  private static func jsonValue(from content: GeneratedContent) -> JSONValue {
-    JSONValue.parsed(content.jsonString) ?? .object([:])
   }
 
   /// Adaptive thinking whenever the model accepts it; omitted otherwise —

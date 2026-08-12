@@ -47,21 +47,29 @@ import Testing
     #expect(reasoning.signature == Data(base64Encoded: "c2ln"))
   }
 
-  // Replay of redacted thoughts is metadata-driven, so the translator's mark
-  // must survive the framework's transcript assembly — this pins that hop.
+  // A redacted thought has nothing to show but must go back byte for byte:
+  // it surfaces as a text-less reasoning entry carrying the block.
   @Test func `redacted thinking round-trips to a redacted_thinking replay`() async throws {
     let payload = Data([0xDE, 0xAD, 0xBE, 0xEF])
     let model = StubbedClaudeModel(fixture: redactedThinkingTurnSSE(payload: payload))
     let session = LanguageModelSession(model: model)
     _ = try await session.respond(to: "hi")
 
-    #expect(reasoningEntries(in: session.transcript).count == 1)
+    let entries = reasoningEntries(in: session.transcript)
+    #expect(entries.count == 1)
+    #expect(entries.first?.signature == payload)
+    #expect(reasoningText(in: session.transcript).isEmpty)
 
     let request = LanguageModelExecutorGenerationRequest.make(transcript: session.transcript)
     let built = try RequestBuilder.build(from: request, model: .sonnet5)
     let assistantBlocks = built.request.messages
       .filter { $0.role == .assistant }
       .flatMap(\.content)
-    #expect(assistantBlocks.contains(.redactedThinking(payload)))
+    #expect(
+      assistantBlocks == [
+        .raw(["type": "redacted_thinking", "data": .string(payload.base64EncodedString())]),
+        .raw(["type": "text", "text": "Hello!"]),
+      ]
+    )
   }
 }

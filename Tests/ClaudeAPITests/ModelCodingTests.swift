@@ -122,52 +122,24 @@ import Testing
     #expect(unsigned == .thinking("hmm", signature: nil))
   }
 
-  @Test func `redacted_thinking decodes base64 payload to bytes`() throws {
-    let block = try JSONDecoder()
-      .decode(
-        ContentBlock.self,
-        from: Data(#"{"type":"redacted_thinking","data":"AAEC"}"#.utf8)
-      )
-    #expect(block == .redactedThinking(Data([0x00, 0x01, 0x02])))
-  }
-
-  @Test func `server_tool_use decodes`() throws {
-    let block = try JSONDecoder()
-      .decode(
-        ContentBlock.self,
-        from: Data(
-          #"{"type":"server_tool_use","id":"st_1","name":"web_search","input":{"q":"x"}}"#.utf8
-        )
-      )
-    #expect(
-      block == .serverToolUse(id: "st_1", name: "web_search", input: .object(["q": .string("x")]))
-    )
-  }
-
-  @Test func `any _tool_result suffix decodes as a server tool result`() throws {
-    let block = try JSONDecoder()
-      .decode(
-        ContentBlock.self,
-        from: Data(
-          #"{"type":"web_search_tool_result","tool_use_id":"st_1","content":[{"title":"T"}]}"#.utf8
-        )
-      )
-    guard case .serverToolResult(let id, let type, let content) = block else {
-      Issue.record("expected serverToolResult, got \(block)")
-      return
+  @Test func `blocks without a typed case decode as the object sent and encode back to it`()
+    throws
+  {
+    // Echo-only blocks — redacted thinking, server-side tool traffic, types
+    // that don't exist yet — must neither fail the decode nor lose a field.
+    for json in [
+      #"{"data":"AAEC","type":"redacted_thinking"}"#,
+      #"{"id":"st_1","input":{"q":"x"},"name":"web_search","type":"server_tool_use"}"#,
+      #"{"content":[{"title":"T"}],"tool_use_id":"st_1","type":"web_search_tool_result"}"#,
+      #"{"type":"web_search_tool_result"}"#,
+      #"{"data":123,"type":"future_block"}"#,
+    ] {
+      let block = try JSONDecoder().decode(ContentBlock.self, from: Data(json.utf8))
+      #expect(block == .raw(try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))))
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = .sortedKeys
+      #expect(String(decoding: try encoder.encode(block), as: UTF8.self) == json)
     }
-    #expect(id == "st_1")
-    #expect(type == "web_search_tool_result")
-    #expect(content == .array([.object(["title": .string("T")])]))
-  }
-
-  @Test func `unrecognized content block surfaces as unknown`() throws {
-    let block = try JSONDecoder()
-      .decode(
-        ContentBlock.self,
-        from: Data(#"{"type":"future_block","data":123}"#.utf8)
-      )
-    #expect(block == .unknown(type: "future_block"))
   }
 
   @Test func `unknown stop_reason decodes leniently instead of killing the stream`() throws {
@@ -237,18 +209,55 @@ import Testing
     #expect(resp.usage.inputTokens == 7)
   }
 
-  @Test func `content_block_start decodes a tool_use block`() throws {
+  @Test func `content_block_start carries the block as sent, unmodeled fields included`() throws {
     let payload = #"""
-      {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_9","name":"get_weather","input":{}}}
+      {"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{},"caller":{"type":"code_execution_20260120","tool_id":"srv_0"}}}
       """#
     let event = try JSONDecoder().decode(StreamEvent.self, from: Data(payload.utf8))
-    guard case .contentBlockStart(let index, .toolUse(let id, let name, _)) = event else {
-      Issue.record("expected contentBlockStart/toolUse, got \(event)")
+    guard case .contentBlockStart(let index, let block) = event else {
+      Issue.record("expected contentBlockStart, got \(event)")
       return
     }
     #expect(index == 2)
-    #expect(id == "toolu_9")
-    #expect(name == "get_weather")
+    #expect(
+      block
+        == [
+          "type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": [:],
+          "caller": ["type": "code_execution_20260120", "tool_id": "srv_0"],
+        ]
+    )
+  }
+
+  @Test func `citations_delta decodes the citation as sent`() throws {
+    let payload = #"""
+      {"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://a.example","encrypted_index":"opaque"}}}
+      """#
+    let event = try JSONDecoder().decode(StreamEvent.self, from: Data(payload.utf8))
+    guard case .contentBlockDelta(_, .citation(let citation)) = event else {
+      Issue.record("expected citation delta, got \(event)")
+      return
+    }
+    #expect(
+      citation
+        == [
+          "type": "web_search_result_location", "url": "https://a.example",
+          "encrypted_index": "opaque",
+        ]
+    )
+  }
+
+  @Test func `a raw block encodes as the object it holds`() throws {
+    let message = Message(
+      role: .assistant,
+      content: [.raw(["type": "future_block", "payload": ["n": 1]]), .text("hi")]
+    )
+    let json =
+      try JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as? [String: Any]
+    let content = try #require(json?["content"] as? [[String: Any]])
+    #expect(content.count == 2)
+    #expect(content[0]["type"] as? String == "future_block")
+    #expect((content[0]["payload"] as? [String: Any])?["n"] as? Int == 1)
+    #expect(content[1]["type"] as? String == "text")
   }
 
   @Test func `thinking, signature, and input_json deltas decode`() throws {

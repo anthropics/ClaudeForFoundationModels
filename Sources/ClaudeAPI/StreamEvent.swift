@@ -6,7 +6,10 @@ import Foundation
 /// Server-sent event payloads from `POST /v1/messages` with `stream: true`.
 package enum StreamEvent: Sendable, Decodable {
   case messageStart(MessagesResponse)
-  case contentBlockStart(index: Int, block: ContentBlock)
+  /// `block` is the block object exactly as the API sent it: assistant
+  /// content has to go back verbatim, so nothing about it is interpreted
+  /// away here.
+  case contentBlockStart(index: Int, block: JSONValue)
   case contentBlockDelta(index: Int, delta: Delta)
   case contentBlockStop(index: Int)
   case messageDelta(stopReason: StopReason?, usage: Usage)
@@ -22,11 +25,15 @@ package enum StreamEvent: Sendable, Decodable {
     case inputJSON(String)
     case thinking(String)
     case signature(String)
+    /// One citation to append to the current text block's `citations`,
+    /// carried as sent — citation shapes vary by source and are only ever
+    /// echoed back.
+    case citation(JSONValue)
     /// Forward-compat: unrecognized delta types are surfaced, not thrown.
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
-      case type, text, thinking, signature
+      case type, text, thinking, signature, citation
       case partialJSON = "partial_json"
     }
 
@@ -42,6 +49,8 @@ package enum StreamEvent: Sendable, Decodable {
         self = .thinking(try c.decode(String.self, forKey: .thinking))
       case "signature_delta":
         self = .signature(try c.decode(String.self, forKey: .signature))
+      case "citations_delta":
+        self = .citation(try c.decode(JSONValue.self, forKey: .citation))
       default:
         self = .unknown(type: type)
       }
@@ -66,7 +75,7 @@ package enum StreamEvent: Sendable, Decodable {
     case "content_block_start":
       self = .contentBlockStart(
         index: try c.decode(Int.self, forKey: .index),
-        block: try c.decode(ContentBlock.self, forKey: .contentBlock)
+        block: try c.decode(JSONValue.self, forKey: .contentBlock)
       )
     case "content_block_delta":
       self = .contentBlockDelta(

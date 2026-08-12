@@ -1,6 +1,7 @@
 // Copyright 2026 Anthropic PBC
 // SPDX-License-Identifier: Apache-2.0
 
+import ClaudeAPI
 import Foundation
 import FoundationModels
 import Synchronization
@@ -135,116 +136,284 @@ import Testing
     }
   }
 
-  @Test func `server tool input arriving whole in the start block is parsed`() async throws {
-    // The agentic search flow delivers the call input in content_block_start
-    // with no input_json_delta events.
-    let session = LanguageModelSession(
-      model: StubbedClaudeModel(
-        fixture: sseBody([
-          [
-            "event: message_start",
-            #"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":1}}}"#,
-          ],
-          [
-            "event: content_block_start",
-            #"data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv_2","name":"web_search","input":{"query":"weather"}}}"#,
-          ],
-          ["event: content_block_stop", #"data: {"type":"content_block_stop","index":0}"#],
-          [
-            "event: content_block_start",
-            #"data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
-          ],
-          [
-            "event: content_block_delta",
-            #"data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Searching."}}"#,
-          ],
-          ["event: content_block_stop", #"data: {"type":"content_block_stop","index":1}"#],
-          [
-            "event: message_delta",
-            #"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}"#,
-          ],
-          ["event: message_stop", #"data: {"type":"message_stop"}"#],
-        ])
-      )
-    )
-
-    _ = try await session.respond(to: "weather?")
-
-    let segments = serverToolSegments(in: session.transcript)
-    #expect(segments.count == 1)
-    let segment = try #require(segments.first)
-    #expect(segment.id == "srv_2")
-    #expect(segment.content == .webSearch(.init(query: "weather")))
-  }
-
-  @Test func `server tool use and result merge into one transcript segment`() async throws {
-    let session = LanguageModelSession(
-      model: StubbedClaudeModel(
-        fixture: sseBody([
-          [
-            "event: message_start",
-            #"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":1}}}"#,
-          ],
-          [
-            "event: content_block_start",
-            #"data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}}"#,
-          ],
-          [
-            "event: content_block_delta",
-            #"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":"}}"#,
-          ],
-          [
-            "event: content_block_delta",
-            #"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"weather\"}"}}"#,
-          ],
-          ["event: content_block_stop", #"data: {"type":"content_block_stop","index":0}"#],
-          [
-            "event: content_block_start",
-            #"data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srv_1","content":[{"type":"web_search_result","url":"https://weather.gov","title":"NWS","page_age":"June 7, 2026"}]}}"#,
-          ],
-          ["event: content_block_stop", #"data: {"type":"content_block_stop","index":1}"#],
-          [
-            "event: content_block_start",
-            #"data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}"#,
-          ],
-          [
-            "event: content_block_delta",
-            #"data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"It is sunny."}}"#,
-          ],
-          ["event: content_block_stop", #"data: {"type":"content_block_stop","index":2}"#],
-          [
-            "event: message_delta",
-            #"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}"#,
-          ],
-          ["event: message_stop", #"data: {"type":"message_stop"}"#],
-        ])
-      )
-    )
+  @Test func `a server tool turn is recorded in order and surfaced as activity`() async throws {
+    let blocks: [TurnBlock] = [
+      .text(["Checking."]), .search(id: "srv_1", query: "weather"), .searchResult(id: "srv_1"),
+      .text(["It is ", "sunny."]),
+    ]
+    let session = LanguageModelSession(model: StubbedClaudeModel(fixture: turn(blocks)))
 
     let response = try await session.respond(to: "weather?")
-    #expect(response.content.contains("It is sunny."))
 
-    // Call and result share a segment id, so the result's update replaces the
-    // pending call segment instead of adding a second one.
-    let segments = serverToolSegments(in: session.transcript)
-    #expect(segments.count == 1)
-    let segment = try #require(segments.first)
-    #expect(segment.id == "srv_1")
+    // One segment per text block, and an empty one holding the search's place
+    // between them, keyed to its payload by the API's tool-use id.
+    let entry = try #require(responseEntries(in: session.transcript).first)
     #expect(
-      segment.content
-        == .webSearch(
-          .init(
-            query: "weather",
-            outcome: .results([
-              .init(
-                url: URL(string: "https://weather.gov")!,
-                title: "NWS",
-                pageAge: "June 7, 2026"
-              )
-            ])
-          )
-        )
+      entry.segments.map { segment -> String? in
+        if case .text(let text) = segment { text.content } else { nil }
+      } == ["Checking.", "", "It is sunny."]
     )
+    #expect(entry.segments.dropFirst().first?.id == "srv_1")
+    #expect(
+      entry.segments.map { entry.claudeServerToolActivity(for: $0) } == [
+        nil, searchActivity(id: "srv_1", query: "weather", answered: true), nil,
+      ]
+    )
+    #expect(response.content == "Checking.It is sunny.")
+    #expect(recordedBlocks(in: session.transcript) == blocks.map(\.wire))
+    #expect(
+      session.transcript.claudeServerToolActivity == [
+        searchActivity(id: "srv_1", query: "weather", answered: true)
+      ]
+    )
+  }
+
+  @Test func `each block is recorded on the entry that presents it`() async throws {
+    let tool = PingTool()
+    let blocks: [TurnBlock] = [
+      .thinking(["Let me ", "see."], signature: "c2ln"), .text(["One moment."]),
+      .thinking(["Right."], signature: "bW9yZQ=="), .toolUse(id: "toolu_1", name: "ping"),
+    ]
+    let transport = MockTransport(responses: [
+      (200, turn(blocks, stopReason: "tool_use")), (200, textTurn(deltas: ["Pong it is."])),
+    ])
+    let session = LanguageModelSession(
+      model: StubbedClaudeModel(transport: transport),
+      tools: [tool]
+    )
+
+    _ = try await session.respond(to: "ping?")
+
+    // The turn's model entries, in the order the framework filed them.
+    let entries = Array(
+      session.transcript.drop { if case .reasoning = $0 { false } else { true } }.prefix(4)
+    )
+    guard entries.count == 4, case .reasoning(let first) = entries[0],
+      case .response(let response) = entries[1], case .reasoning(let second) = entries[2],
+      case .toolCalls(let calls) = entries[3]
+    else {
+      Issue.record("unexpected transcript shape: \(entries)")
+      return
+    }
+    #expect(TurnRecord(metadata: first.metadata).blocks.map(\.json) == [blocks[0].wire])
+    #expect(first.signature == Data(base64Encoded: "c2ln"))
+    #expect(TurnRecord(metadata: response.metadata).blocks.map(\.json) == [blocks[1].wire])
+    #expect(TurnRecord(metadata: second.metadata).blocks.map(\.json) == [blocks[2].wire])
+    let call = try #require(calls.first)
+    #expect(TurnRecord(metadata: call.metadata).blocks.map(\.json) == [blocks[3].wire])
+    #expect(recordedBlocks(in: session.transcript).prefix(4).elementsEqual(blocks.map(\.wire)))
+    // And the whole turn went back as sent when the tool output was returned.
+    #expect(try replayedAssistantContent(in: transport) == [blocks.map(\.wire)])
+  }
+
+  @Test func `a recorded turn goes back to the API exactly as received`() async throws {
+    let blocks: [TurnBlock] = [
+      .search(id: "srv_1", query: "weather"), .searchResult(id: "srv_1"),
+      .citedText("Sunny.", citation: "idx_1"),
+    ]
+    let transport = MockTransport(responses: [
+      (200, turn(blocks)),
+      (200, textTurn(deltas: ["You're welcome."])),
+    ])
+    let session = LanguageModelSession(model: StubbedClaudeModel(transport: transport))
+
+    _ = try await session.respond(to: "weather?")
+    _ = try await session.respond(to: "thanks")
+
+    #expect(try replayedAssistantContent(in: transport) == [blocks.map(\.wire)])
+  }
+
+  @Test func `a search deferred behind a client tool call is answered in the next response`()
+    async throws
+  {
+    let tool = PingTool()
+    let firstTurn: [TurnBlock] = [
+      .search(id: "srv_1", query: "q"), .toolUse(id: "toolu_1", name: "ping"),
+    ]
+    let secondTurn: [TurnBlock] = [.searchResult(id: "srv_1"), .text(["Both done."])]
+    let transport = MockTransport(responses: [
+      (200, turn(firstTurn, stopReason: "tool_use")),
+      (200, turn(secondTurn)),
+      (200, textTurn(deltas: ["Anytime."])),
+    ])
+    let session = LanguageModelSession(
+      model: StubbedClaudeModel(transport: transport),
+      tools: [tool]
+    )
+
+    let response = try await session.respond(to: "search and ping")
+
+    #expect(response.content == "Both done.")
+    #expect(tool.callCount == 1)
+    #expect(
+      session.transcript.claudeServerToolActivity == [
+        searchActivity(id: "srv_1", query: "q", answered: true)
+      ]
+    )
+    // The continuation carried the unanswered call back, as the API requires.
+    #expect(try replayedAssistantContent(in: transport) == [firstTurn.map(\.wire)])
+
+    _ = try await session.respond(to: "thanks")
+    #expect(
+      try replayedAssistantContent(in: transport) == [
+        firstTurn.map(\.wire), secondTurn.map(\.wire),
+      ]
+    )
+  }
+
+  @Test func `a response that streams no text still records what it received`() async throws {
+    // The deferred result arrives in a response that goes straight on to
+    // another tool call: that response entry gets metadata and nothing else,
+    // and must still exist to hold the result.
+    let tool = PingTool()
+    let transport = MockTransport(responses: [
+      (
+        200,
+        turn(
+          [.search(id: "srv_1", query: "q"), .toolUse(id: "toolu_1", name: "ping")],
+          stopReason: "tool_use"
+        )
+      ),
+      (
+        200,
+        turn(
+          [.searchResult(id: "srv_1"), .toolUse(id: "toolu_2", name: "ping")],
+          stopReason: "tool_use"
+        )
+      ),
+      (200, turn([.text(["All done."])])),
+      (200, textTurn(deltas: ["Anytime."])),
+    ])
+    let session = LanguageModelSession(
+      model: StubbedClaudeModel(transport: transport),
+      tools: [tool]
+    )
+
+    _ = try await session.respond(to: "search and ping twice")
+
+    #expect(tool.callCount == 2)
+    #expect(
+      session.transcript.claudeServerToolActivity == [
+        searchActivity(id: "srv_1", query: "q", answered: true)
+      ]
+    )
+    _ = try await session.respond(to: "thanks")
+    #expect(
+      try replayedAssistantContent(in: transport).prefix(2)
+        .elementsEqual([
+          [TurnBlock.search(id: "srv_1", query: "q"), .toolUse(id: "toolu_1", name: "ping")]
+            .map(\.wire),
+          [TurnBlock.searchResult(id: "srv_1"), .toolUse(id: "toolu_2", name: "ping")].map(\.wire),
+        ])
+    )
+  }
+
+  @Test func `a paused turn is continued from where it stopped`() async throws {
+    let paused: [TurnBlock] = [.search(id: "srv_1", query: "q"), .searchResult(id: "srv_1")]
+    let transport = MockTransport(responses: [
+      (200, turn(paused, stopReason: "pause_turn")),
+      (200, turn([.text(["Done."])])),
+    ])
+    let session = LanguageModelSession(model: StubbedClaudeModel(transport: transport))
+
+    let response = try await session.respond(to: "research this")
+
+    #expect(response.content == "Done.")
+    #expect(transport.requests.count == 2)
+    // The continuation request re-sent the paused content as received.
+    #expect(try replayedAssistantContent(in: transport) == [paused.map(\.wire)])
+    // The turn's record and usage span both responses.
+    #expect(recordedBlocks(in: session.transcript) == (paused + [.text(["Done."])]).map(\.wire))
+    #expect(session.usage.input.totalTokenCount == 20)
+    #expect(session.usage.output.totalTokenCount == 10)
+  }
+
+  @Test func `a continuation doesn't end in whitespace even when the paused content did`()
+    async throws
+  {
+    // The paused content becomes the request's final assistant message,
+    // where the API refuses trailing whitespace; the record keeps it as sent.
+    let paused: [TurnBlock] = [
+      .search(id: "srv_1", query: "q"), .searchResult(id: "srv_1"), .text(["So far: \n"]),
+      .text(["\n\n"]),
+    ]
+    let transport = MockTransport(responses: [
+      (200, turn(paused, stopReason: "pause_turn")),
+      (200, turn([.text(["Done."])])),
+    ])
+    let session = LanguageModelSession(model: StubbedClaudeModel(transport: transport))
+
+    _ = try await session.respond(to: "research this")
+
+    #expect(
+      try replayedAssistantContent(in: transport) == [
+        paused.prefix(2).map(\.wire) + [["type": "text", "text": "So far:"]]
+      ]
+    )
+    #expect(recordedBlocks(in: session.transcript).prefix(4).elementsEqual(paused.map(\.wire)))
+  }
+
+  @Test func `a pause that delivered nothing ends the turn`() async throws {
+    let transport = MockTransport(responses: [
+      (200, turn([.search(id: "srv_1", query: "q")], stopReason: "pause_turn")),
+      (200, turn([], stopReason: "pause_turn")),
+    ])
+    let session = LanguageModelSession(model: StubbedClaudeModel(transport: transport))
+
+    _ = try await session.respond(to: "loop")
+
+    #expect(transport.requests.count == 2)
+  }
+
+  @Test func `a turn that ends mid-answer replays with the text that had streamed`() async throws {
+    let completed: [TurnBlock] = [.search(id: "srv_1", query: "q"), .searchResult(id: "srv_1")]
+    let whole = turn(completed + [.text(["Partial answer, "])])
+    // The stream ends just before the text block's stop: its delta arrived
+    // but the block never completed.
+    let lastStop = try #require(
+      whole.range(of: Data("event: content_block_stop".utf8), options: .backwards)
+    )
+    let transport = MockTransport(responses: [
+      (200, whole[..<lastStop.lowerBound]), (200, textTurn(deltas: ["Carrying on."])),
+    ])
+    let session = LanguageModelSession(model: StubbedClaudeModel(transport: transport))
+
+    let response = try await session.respond(to: "q?")
+
+    // The completed blocks are recorded; the unfinished text is only in the
+    // response's segments.
+    #expect(response.content == "Partial answer, ")
+    #expect(recordedBlocks(in: session.transcript) == completed.map(\.wire))
+
+    _ = try await session.respond(to: "go on")
+
+    #expect(
+      try replayedAssistantContent(in: transport) == [
+        completed.map(\.wire) + [["type": "text", "text": "Partial answer, "]]
+      ]
+    )
+  }
+
+  @Test func `activity is readable from the transcript while the answer is still streaming`()
+    async throws
+  {
+    let session = LanguageModelSession(
+      model: StubbedClaudeModel(
+        fixture: turn([
+          .search(id: "srv_1", query: "q"), .searchResult(id: "srv_1"),
+          .text(["Here ", "is ", "the ", "answer."]),
+        ])
+      )
+    )
+
+    var activityAtFirstSnapshot: [ClaudeServerToolActivity]?
+    for try await _ in session.streamResponse(to: "q?") where activityAtFirstSnapshot == nil {
+      activityAtFirstSnapshot = session.transcript.claudeServerToolActivity
+    }
+
+    // The search is on the transcript from the first snapshot, not only once
+    // the turn is over.
+    #expect(activityAtFirstSnapshot?.map(\.id) == ["srv_1"])
   }
 
   @Test func `unknown events and deltas are ignored, not thrown`() async throws {
