@@ -11,20 +11,15 @@ package enum ContentBlock: Sendable, Hashable, Codable {
   /// `content` is a block array — tool results may carry text and images.
   case toolResult(toolUseID: String, content: [ContentBlock], isError: Bool = false)
   case thinking(String, signature: String? = nil)
-  case redactedThinking(Data)
-  /// A tool that executes on Anthropic's infrastructure (web search, code
-  /// execution). Unlike `.toolUse`, the framework never invokes it — the
-  /// result arrives in the same response.
-  case serverToolUse(id: String, name: String, input: JSONValue)
-  /// Result from a server-side tool. `content` is opaque — its shape varies
-  /// by tool and the caller renders it as JSON.
-  case serverToolResult(toolUseID: String, type: String, content: JSONValue)
-  /// Forward-compatability: unrecognized block types are surfaced, not thrown,
-  /// so a new API content type doesn't break existing clients.
-  case unknown(type: String)
+  /// A block held as the JSON object the API sent or is to receive. Decoding
+  /// yields this for any type without a typed case (`redacted_thinking` and
+  /// the server-side tool blocks among them), so a new content type neither
+  /// breaks existing clients nor loses its payload; encoding writes the
+  /// object as is.
+  case raw(JSONValue)
 
   private enum CodingKeys: String, CodingKey {
-    case type, text, source, id, name, input, thinking, signature, data
+    case type, text, source, id, name, input, thinking, signature
     case toolUseID = "tool_use_id"
     case content
     case isError = "is_error"
@@ -62,30 +57,16 @@ package enum ContentBlock: Sendable, Hashable, Codable {
         try c.decode(String.self, forKey: .thinking),
         signature: try c.decodeIfPresent(String.self, forKey: .signature)
       )
-    case "redacted_thinking":
-      let b64 = try c.decode(String.self, forKey: .data)
-      self = .redactedThinking(Data(base64Encoded: b64) ?? Data())
-    case "server_tool_use":
-      self = .serverToolUse(
-        id: try c.decode(String.self, forKey: .id),
-        name: try c.decode(String.self, forKey: .name),
-        input: try c.decode(JSONValue.self, forKey: .input)
-      )
-    // Server-side tool results all end in `_tool_result` (e.g.
-    // `web_search_tool_result`, `code_execution_tool_result`). The plain
-    // `tool_result` is the developer-side case and matched above.
-    case let result where result.hasSuffix("_tool_result"):
-      self = .serverToolResult(
-        toolUseID: try c.decode(String.self, forKey: .toolUseID),
-        type: result,
-        content: try c.decodeIfPresent(JSONValue.self, forKey: .content) ?? .null
-      )
     default:
-      self = .unknown(type: type)
+      self = .raw(try JSONValue(from: decoder))
     }
   }
 
   package func encode(to encoder: Encoder) throws {
+    if case .raw(let object) = self {
+      try object.encode(to: encoder)
+      return
+    }
     var c = encoder.container(keyedBy: CodingKeys.self)
     switch self {
     case .text(let t):
@@ -113,20 +94,8 @@ package enum ContentBlock: Sendable, Hashable, Codable {
       try c.encode("thinking", forKey: .type)
       try c.encode(t, forKey: .thinking)
       try c.encodeIfPresent(signature, forKey: .signature)
-    case .redactedThinking(let data):
-      try c.encode("redacted_thinking", forKey: .type)
-      try c.encode(data.base64EncodedString(), forKey: .data)
-    case .serverToolUse(let id, let name, let input):
-      try c.encode("server_tool_use", forKey: .type)
-      try c.encode(id, forKey: .id)
-      try c.encode(name, forKey: .name)
-      try c.encode(input, forKey: .input)
-    case .serverToolResult(let toolUseID, let type, let content):
-      try c.encode(type, forKey: .type)
-      try c.encode(toolUseID, forKey: .toolUseID)
-      try c.encode(content, forKey: .content)
-    case .unknown(let type):
-      try c.encode(type, forKey: .type)
+    case .raw:
+      break  // written above, without the keyed container
     }
   }
 }

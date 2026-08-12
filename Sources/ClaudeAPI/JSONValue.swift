@@ -55,6 +55,29 @@ package enum JSONValue: Sendable, Hashable, Codable {
   }
 }
 
+extension JSONValue {
+  /// The named field of an object; `nil` for a missing field or a non-object.
+  package subscript(field: String) -> JSONValue? {
+    if case .object(let fields) = self { fields[field] } else { nil }
+  }
+
+  /// Decodes the value into a `Decodable` type by round-tripping through
+  /// `Data` — payload shapes are small, so clarity wins over speed.
+  package func decoded<Value: Decodable>() -> Value? {
+    guard let data = try? JSONEncoder().encode(self) else { return nil }
+    return try? JSONDecoder().decode(Value.self, from: data)
+  }
+
+  package static func encoded(_ value: some Encodable) -> JSONValue? {
+    guard let data = try? JSONEncoder().encode(value) else { return nil }
+    return try? JSONDecoder().decode(JSONValue.self, from: data)
+  }
+
+  package static func parsed(_ json: String) -> JSONValue? {
+    try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+  }
+}
+
 extension JSONValue: ExpressibleByNilLiteral, ExpressibleByBooleanLiteral,
   ExpressibleByIntegerLiteral, ExpressibleByFloatLiteral,
   ExpressibleByStringLiteral, ExpressibleByArrayLiteral,
