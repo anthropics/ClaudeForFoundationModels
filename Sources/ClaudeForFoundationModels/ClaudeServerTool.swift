@@ -33,6 +33,10 @@ public enum ClaudeServerTool: Hashable, Sendable {
     static let webSearch = "web_search"
     static let webFetch = "web_fetch"
     static let codeExecution = "code_execution"
+    /// The code execution tool runs shell commands under this name; plain
+    /// `code_execution` is what other server tools use to run code
+    /// internally.
+    static let bashCodeExecution = "bash_code_execution"
   }
 
   /// Domain policy for the web tools — an allowlist or a blocklist, never

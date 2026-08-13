@@ -128,6 +128,47 @@ import Testing
     )
   }
 
+  @Test func `the code execution tool's shell calls read as code execution`() throws {
+    let activity = ClaudeServerToolActivity.derive(
+      from: record([
+        serverToolUse(id: "srv_1", name: "bash_code_execution", input: ["command": "echo 1"]),
+        [
+          "type": "bash_code_execution_tool_result", "tool_use_id": "srv_1",
+          "content": [
+            "type": "bash_code_execution_result", "stdout": "1\n", "stderr": "", "return_code": 0,
+          ],
+        ],
+        serverToolUse(id: "srv_2", name: "bash_code_execution", input: ["command": "false"]),
+        [
+          "type": "bash_code_execution_tool_result", "tool_use_id": "srv_2",
+          "content": [
+            "type": "bash_code_execution_tool_result_error", "error_code": "unavailable",
+          ],
+        ],
+      ])
+      .blocks
+    )
+    #expect(
+      activity.map(\.content) == [
+        .codeExecution(
+          .init(
+            code: "echo 1",
+            outcome: .output(.init(stdout: "1\n", stderr: "", returnCode: 0)),
+            toolName: "bash_code_execution"
+          )
+        ),
+        .codeExecution(
+          .init(
+            code: "false",
+            outcome: .failure(errorCode: "unavailable"),
+            toolName: "bash_code_execution"
+          )
+        ),
+      ]
+    )
+    #expect(activity.first?.toolName == "bash_code_execution")
+  }
+
   @Test func `an unknown tool surfaces by name`() throws {
     let activity = ClaudeServerToolActivity.derive(
       from: record([

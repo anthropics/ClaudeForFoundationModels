@@ -59,15 +59,15 @@ extension ClaudeServerToolActivity.Content {
         self = .webFetch(.init(url: call.url, outcome: outcome))
         return
       }
-    case ClaudeServerTool.Name.codeExecution:
+    case ClaudeServerTool.Name.codeExecution, ClaudeServerTool.Name.bashCodeExecution:
       if let call: CodeExecutionInput = input.decoded(),
         let outcome = Self.outcome(
           of: result,
-          expecting: "code_execution_tool_result",
+          expecting: "\(toolName)_tool_result",
           ClaudeServerToolActivity.CodeExecution.Outcome.init(payload:)
         )
       {
-        self = .codeExecution(.init(code: call.code, outcome: outcome))
+        self = .codeExecution(.init(code: call.code, outcome: outcome, toolName: toolName))
         return
       }
     default:
@@ -94,7 +94,7 @@ extension ClaudeServerToolActivity.Content {
     switch self {
     case .webSearch: ClaudeServerTool.Name.webSearch
     case .webFetch: ClaudeServerTool.Name.webFetch
-    case .codeExecution: ClaudeServerTool.Name.codeExecution
+    case .codeExecution(let execution): execution.toolName
     case .unrecognized(let unrecognized): unrecognized.toolName
     }
   }
@@ -187,8 +187,20 @@ private struct WebFetchInput: Decodable {
   var url: URL
 }
 
+/// `code_execution` sends `code`; `bash_code_execution` sends `command`.
 private struct CodeExecutionInput: Decodable {
   var code: String
+
+  enum CodingKeys: String, CodingKey {
+    case code, command
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    code =
+      try c.decodeIfPresent(String.self, forKey: .code)
+      ?? c.decode(String.self, forKey: .command)
+  }
 }
 
 /// `{"type": "*_tool_result_error", "error_code": ...}` — the failure shape

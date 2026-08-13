@@ -94,9 +94,12 @@ public struct ClaudeServerToolActivity: Sendable, Equatable, Identifiable {
   // MARK: - Code execution
 
   public struct CodeExecution: Sendable, Equatable {
-    /// The code the model ran in Anthropic's sandbox.
+    /// What the model ran in Anthropic's sandbox: a shell command when the
+    /// code execution tool is enabled, or Python when another server tool
+    /// runs code on its own.
     public let code: String
     public let outcome: Outcome?
+    var toolName = ClaudeServerTool.Name.codeExecution
 
     public enum Outcome: Sendable, Equatable {
       case output(Output)
