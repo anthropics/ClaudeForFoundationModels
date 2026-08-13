@@ -217,6 +217,36 @@ let model = ClaudeLanguageModel(
 
 `.webSearch` and `.webFetch` accept a `domains:` filter — `.unrestricted` (the default), `.allowing([...])`, or `.blocking([...])` — and an optional `maxUses`. These are distinct from the framework's `tools:` array, which holds client-side tools the framework invokes on the device.
 
+In the transcript, a response entry's segments run in the order the model produced them: prose in text segments and, wherever the model searched, fetched, or ran code, an empty segment holding that call's place. Ask the entry which it is to render the activity inline; a call appears as soon as the model issues it, with its `outcome` filled in when the result arrives in the same response:
+
+```swift
+for case .response(let entry) in session.transcript {
+  for segment in entry.segments {
+    if let activity = entry.claudeServerToolActivity(for: segment) {
+      if case .webSearch(let search) = activity.content { print("Searched for \(search.query)") }
+    } else if case .text(let text) = segment {
+      print(text.content)
+    }
+  }
+}
+```
+
+To render searches inline while the answer is still streaming, walk the snapshot's entries the same way:
+
+```swift
+for try await snapshot in session.streamResponse(to: prompt) {
+  for case .response(let entry) in snapshot.transcriptEntries {
+    for segment in entry.segments {
+      // text or activity, as above
+    }
+  }
+}
+```
+
+`session.transcript.claudeServerToolActivities` lists every round-trip in the conversation, and also pairs a result that only arrived in a later response (when the model called one of your tools alongside the search).
+
+Everything the API needs back on later turns (thinking signatures, search results, citations, a search that was still running when the model called one of your tools) is kept on the transcript entries under a reserved `claude.content` metadata key and replayed for you, including across a persisted `Transcript`. Treat that key's value as opaque.
+
 ## Error handling
 
 Provider errors that don't map onto a Foundation Models `LanguageModelError` surface as `ClaudeError`. Pattern-match to drive product flows:

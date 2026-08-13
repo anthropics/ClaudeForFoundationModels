@@ -148,10 +148,11 @@ import Testing
     let store = InMemoryAppAttestStore()
     try store.setKeyID(FakeAttestation.keyID, for: "clid_test")
     try store.setToken(.init(value: "tok-1", expiresAt: .distantFuture), for: "clid_test")
-    // A ping arrives before the auth error. It writes nothing to the
-    // channel, so the retry should still fire.
+    // A ping and a message_start (reporting 100 prompt tokens) arrive before
+    // the auth error. Neither writes to the channel, so the retry still
+    // fires, and the abandoned attempt's usage must not be counted.
     let transport = MockTransport(responses: [
-      (200, pingThenAuthErrorBody),
+      (200, preludeThenAuthErrorBody),
       (200, WireFixtures.challengeBody),
       (200, WireFixtures.oauthBody(token: "tok-2")),
       (200, okStream),
@@ -169,6 +170,8 @@ import Testing
     #expect(response.content == "Hi")
     #expect(transport.requests.count == 4)
     #expect(transport.requests[3].value(forHTTPHeaderField: "Authorization") == "Bearer tok-2")
+    // Only the response that was actually read counts toward usage.
+    #expect(session.usage.input.totalTokenCount == 10)
   }
 
   @Test func `an authentication error after stream content is not retried`() async throws {
@@ -193,6 +196,35 @@ import Testing
     // it. The rejected token still gets invalidated.
     #expect(transport.requests.count == 1)
     #expect(try store.token(for: "clid_test") == nil)
+  }
+
+  @Test func `a continuation rejected for auth is retried with a fresh token`() async throws {
+    let store = InMemoryAppAttestStore()
+    try store.setKeyID(FakeAttestation.keyID, for: "clid_test")
+    try store.setToken(.init(value: "tok-1", expiresAt: .distantFuture), for: "clid_test")
+    let transport = MockTransport(responses: [
+      (200, turn([.search(id: "srv_1", query: "q")], stopReason: "pause_turn")),
+      (401, authErrorBody),
+      (200, WireFixtures.challengeBody),
+      (200, WireFixtures.oauthBody(token: "tok-2")),
+      (200, okStream),
+    ])
+    let session = LanguageModelSession(
+      model: StubbedClaudeModel(
+        transport: transport,
+        auth: .appAttest(clientID: "clid_test"),
+        attestSession: attestSession(store: store, transport: transport)
+      )
+    )
+
+    let response = try await session.respond(to: "research this")
+
+    #expect(response.content == "Hi")
+    #expect(transport.requests.count == 5)
+    // The first response already streamed, but the rejected continuation
+    // itself wrote nothing, so it is the one retried.
+    #expect(transport.requests[4].value(forHTTPHeaderField: "Authorization") == "Bearer tok-2")
+    #expect(try replayedAssistantContent(in: transport).count == 1)
   }
 
   @Test func `one attest session is shared per client id`() throws {
@@ -252,10 +284,15 @@ import Testing
     #"{"type":"error","error":{"type":"authentication_error","message":"expired"}}"#.utf8
   )
 
-  /// Fails authentication after only a ping. Nothing has reached the
-  /// channel, so a transparent retry is still safe.
-  private let pingThenAuthErrorBody = sseBody([
+  /// Fails authentication after only a ping and a message_start reporting
+  /// 100 prompt tokens. Nothing has reached the channel, so a transparent
+  /// retry is still safe.
+  private let preludeThenAuthErrorBody = sseBody([
     ["event: ping", #"data: {"type":"ping"}"#],
+    [
+      "event: message_start",
+      #"data: {"type":"message_start","message":{"id":"msg_0","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":1}}}"#,
+    ],
     [
       "event: error",
       #"data: {"type":"error","error":{"type":"authentication_error","message":"expired"}}"#,

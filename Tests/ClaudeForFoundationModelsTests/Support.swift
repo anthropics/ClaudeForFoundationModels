@@ -227,6 +227,139 @@ final class MockTransport: HTTPTransport {
   }
 }
 
+// MARK: - Canned turns
+
+/// One content block of a canned assistant turn, plus the JSON the API would
+/// report for it once assembled.
+enum TurnBlock {
+  case text([String])
+  case citedText(String, citation: String)
+  case thinking([String], signature: String)
+  /// Streams the query as `input_json_delta`s, as the API does.
+  case search(id: String, query: String)
+  case searchResult(id: String)
+  case toolUse(id: String, name: String)
+
+  var wire: JSONValue {
+    switch self {
+    case .text(let deltas):
+      ["type": "text", "text": .string(deltas.joined())]
+    case .citedText(let text, let citation):
+      [
+        "type": "text", "text": .string(text),
+        "citations": [
+          ["type": "web_search_result_location", "encrypted_index": .string(citation)]
+        ],
+      ]
+    case .thinking(let deltas, let signature):
+      ["type": "thinking", "thinking": .string(deltas.joined()), "signature": .string(signature)]
+    case .search(let id, let query):
+      serverToolUse(id: id, name: "web_search", input: ["query": .string(query)])
+    case .searchResult(let id):
+      [
+        "type": "web_search_tool_result", "tool_use_id": .string(id),
+        "content": [
+          [
+            "type": "web_search_result", "url": "https://example.com/", "title": "Example",
+            "encrypted_content": "opaque",
+          ]
+        ],
+      ]
+    case .toolUse(let id, let name):
+      ["type": "tool_use", "id": .string(id), "name": .string(name), "input": [:]]
+    }
+  }
+
+  func frames(index: Int) -> [[String]] {
+    func start(_ block: JSONValue) -> [String] {
+      [
+        "event: content_block_start",
+        #"data: {"type":"content_block_start","index":\#(index),"content_block":\#(block.jsonText)}"#,
+      ]
+    }
+    func delta(_ delta: JSONValue) -> [String] {
+      [
+        "event: content_block_delta",
+        #"data: {"type":"content_block_delta","index":\#(index),"delta":\#(delta.jsonText)}"#,
+      ]
+    }
+    let stop = [
+      "event: content_block_stop", #"data: {"type":"content_block_stop","index":\#(index)}"#,
+    ]
+
+    switch self {
+    case .text(let deltas):
+      return [start(["type": "text", "text": ""])]
+        + deltas.map { delta(["type": "text_delta", "text": .string($0)]) } + [stop]
+    case .citedText(let text, let citation):
+      return [
+        start(["type": "text", "text": ""]),
+        delta(["type": "text_delta", "text": .string(text)]),
+        delta([
+          "type": "citations_delta",
+          "citation": ["type": "web_search_result_location", "encrypted_index": .string(citation)],
+        ]),
+        stop,
+      ]
+    case .thinking(let deltas, let signature):
+      return [start(["type": "thinking", "thinking": ""])]
+        + deltas.map { delta(["type": "thinking_delta", "thinking": .string($0)]) }
+        + [delta(["type": "signature_delta", "signature": .string(signature)]), stop]
+    case .search(let id, let query):
+      let input = JSONValue.object(["query": .string(query)]).jsonText
+      let split = input.index(input.startIndex, offsetBy: input.count / 2)
+      return [
+        start(serverToolUse(id: id, name: "web_search", input: [:])),
+        delta(["type": "input_json_delta", "partial_json": .string(String(input[..<split]))]),
+        delta(["type": "input_json_delta", "partial_json": .string(String(input[split...]))]),
+        stop,
+      ]
+    case .searchResult, .toolUse:
+      return [start(wire), stop]
+    }
+  }
+}
+
+/// A complete assistant response made of `blocks`, reporting 10 input and 5
+/// output tokens.
+func turn(_ blocks: [TurnBlock], stopReason: String = "end_turn") -> Data {
+  var frames: [[String]] = [
+    [
+      "event: message_start",
+      #"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+    ]
+  ]
+  for (index, block) in blocks.enumerated() {
+    frames += block.frames(index: index)
+  }
+  frames += [
+    [
+      "event: message_delta",
+      #"data: {"type":"message_delta","delta":{"stop_reason":"\#(stopReason)"},"usage":{"output_tokens":5}}"#,
+    ],
+    ["event: message_stop", #"data: {"type":"message_stop"}"#],
+  ]
+  return sseBody(frames)
+}
+
+/// The activity `TurnBlock.search` produces, with `TurnBlock.searchResult`'s
+/// hit when `answered`.
+func searchActivity(id: String, query: String, answered: Bool) -> ClaudeServerToolActivity {
+  ClaudeServerToolActivity(
+    id: id,
+    content: .webSearch(
+      .init(
+        query: query,
+        outcome: answered
+          ? .results([
+            .init(url: URL(string: "https://example.com/")!, title: "Example", pageAge: nil)
+          ])
+          : nil
+      )
+    )
+  )
+}
+
 /// A small solid-red image for exercising attachment paths.
 func makeTestImage(width: Int = 4, height: Int = 4) -> CGImage {
   let context = CGContext(
@@ -350,15 +483,119 @@ struct StubbedExecutor: LanguageModelExecutor {
   }
 }
 
-/// Server-tool segments of every response entry in the transcript, in order.
-func serverToolSegments(in transcript: Transcript) -> [ClaudeServerToolSegment] {
-  transcript
-    .flatMap { entry -> [Transcript.Segment] in
-      if case .response(let response) = entry { return response.segments }
-      return []
+// MARK: - Turn records
+
+func serverToolUse(id: String, name: String, input: JSONValue) -> JSONValue {
+  ["type": "server_tool_use", "id": .string(id), "name": .string(name), "input": input]
+}
+
+extension TurnRecord {
+  var metadata: [String: any ConvertibleToGeneratedContent] {
+    Self.metadata(turn: turn, stored: blocks.map(\.stored))
+  }
+}
+
+/// A record of `blocks` at consecutive positions from `start` in `turn`.
+func record(_ blocks: [JSONValue], from start: Int = 0, turn: String = "turn-1") -> TurnRecord {
+  TurnRecord(
+    turn: turn,
+    blocks: blocks.enumerated().map { .init(position: start + $0.offset, json: $0.element) }
+  )
+}
+
+/// A response entry recorded as `blocks` (at positions from `start`), with
+/// segments laid out the way the translator would have: a text segment per
+/// text block and an empty placeholder segment per server tool call.
+func recordedResponse(
+  _ blocks: [JSONValue],
+  from start: Int = 0,
+  turn: String = "turn-1"
+) -> Transcript.Entry {
+  let recorded = record(blocks, from: start, turn: turn)
+  let segments = recorded.blocks.compactMap { block -> Transcript.Segment? in
+    switch block.kind {
+    case .text(let text): .text(.init(content: text))
+    case .serverToolUse(let id, _, _): .text(.init(id: id, content: ""))
+    default: nil
     }
-    .compactMap { segment in
-      if case .custom(let custom) = segment { return custom as? ClaudeServerToolSegment }
+  }
+  return .response(.init(metadata: recorded.metadata, segments: segments))
+}
+
+/// A reasoning entry recorded as `block` at `position`, projected the way
+/// the translator would have.
+func recordedReasoning(
+  _ block: JSONValue,
+  at position: Int,
+  turn: String = "turn-1"
+) -> Transcript.Entry {
+  let text: String = if case .string(let t)? = block["thinking"] { t } else { "" }
+  let signature: String? =
+    if case .string(let s)? = block["signature"] ?? block["data"] { s } else { nil }
+  return .reasoning(
+    .init(
+      metadata: record([block], from: position, turn: turn).metadata,
+      segments: text.isEmpty ? [] : [.text(.init(content: text))],
+      signature: signature.flatMap { Data(base64Encoded: $0) }
+    )
+  )
+}
+
+/// A tool-calls entry whose single call is recorded as `block` at `position`.
+func recordedToolCall(
+  _ block: JSONValue,
+  at position: Int,
+  turn: String = "turn-1"
+) throws -> Transcript.Entry {
+  struct NotAToolUseBlock: Error {}
+  guard case .toolUse(let id, let name) = TurnRecord.Kind(block) else { throw NotAToolUseBlock() }
+  return .toolCalls(
+    .init([
+      .init(
+        id: id,
+        metadata: record([block], from: position, turn: turn).metadata,
+        toolName: name,
+        arguments: try GeneratedContent(json: (block["input"] ?? [:]).jsonText)
+      )
+    ])
+  )
+}
+
+/// Response entries in the transcript, in order.
+func responseEntries(in transcript: Transcript) -> [Transcript.Response] {
+  transcript.compactMap { entry in
+    if case .response(let response) = entry { return response }
+    return nil
+  }
+}
+
+/// Everything recorded on the transcript's model entries, turn by turn in
+/// the order the API sent it.
+func recordedBlocks(in transcript: Transcript) -> [JSONValue] {
+  var all: [JSONValue] = []
+  var turn: [TurnRecord.Block] = []
+  for entry in transcript {
+    switch entry {
+    case .response, .reasoning, .toolCalls:
+      turn += TurnRecord(of: entry).blocks
+    default:
+      all += turn.sorted { $0.position < $1.position }.map(\.json)
+      turn = []
+    }
+  }
+  return all + turn.sorted { $0.position < $1.position }.map(\.json)
+}
+
+/// The content of each assistant message in the most recent request the
+/// transport saw, as the JSON that went over the wire.
+func replayedAssistantContent(in transport: MockTransport) throws -> [[JSONValue]] {
+  let body = try #require(transport.requests.last?.httpBody)
+  let request = try JSONDecoder().decode(JSONValue.self, from: body)
+  guard case .array(let messages)? = request["messages"] else { return [] }
+  return messages.compactMap { message in
+    guard message["role"] == "assistant", case .array(let content)? = message["content"] else {
       return nil
     }
+    return content
+  }
 }
