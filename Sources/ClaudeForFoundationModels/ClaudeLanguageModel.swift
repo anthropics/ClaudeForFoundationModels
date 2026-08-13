@@ -50,6 +50,8 @@ public struct ClaudeLanguageModel: Sendable {
   ///     `tools:` array, which the framework invokes client-side.
   ///   - baseURL: API endpoint. Override to point at a developer-run proxy
   ///     that adds authentication server-side (use with ``AuthMode/proxied``).
+  ///     Credentials are only ever sent to this scheme, host, and port: a
+  ///     redirect elsewhere fails the request instead of being followed.
   public init(
     name: ClaudeModel,
     auth: AuthMode,
