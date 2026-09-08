@@ -135,11 +135,7 @@ enum RequestBuilder {
           )
         )
       }
-      applyStructuredOutput(
-        schema,
-        includeInPrompt: request.contextOptions.includeSchemaInPrompt ?? true,
-        to: &req
-      )
+      applyStructuredOutput(schema, to: &req)
     }
 
     return Built(request: req, isStructured: isStructured)
@@ -529,20 +525,20 @@ enum RequestBuilder {
     }
   }
 
-  /// Strict JSON Schema via constrained decoding — the model cannot emit a
-  /// token that violates the schema. Compatible with thinking; the response
-  /// streams as plain text deltas containing valid JSON.
+  /// Strict JSON Schema via constrained decoding (`output_config.format`) —
+  /// the model cannot emit a token that violates the schema. Compatible with
+  /// thinking; the response streams as plain text deltas containing valid
+  /// JSON. Nothing is added to `system`. The API shows the model the schema
+  /// itself whenever a format is set. And `system` has to stay the same
+  /// across a session's requests: the API can reject a replayed thinking
+  /// block once the conversation before it has changed, and the system prompt
+  /// is part of that conversation. `includeSchemaInPrompt` is moot for the
+  /// same reason: the schema always reaches the model.
   private static func applyStructuredOutput(
     _ schema: GenerationSchema,
-    includeInPrompt: Bool,
     to req: inout MessagesRequest
   ) {
     let format = OutputConfig.Format(schema: jsonSchema(from: schema))
     req.outputConfig = OutputConfig(format: format, effort: req.outputConfig?.effort)
-
-    if includeInPrompt {
-      let hint = "Respond with a single JSON object matching the required schema."
-      req.system = (req.system.map { $0 + "\n\n" } ?? "") + hint
-    }
   }
 }

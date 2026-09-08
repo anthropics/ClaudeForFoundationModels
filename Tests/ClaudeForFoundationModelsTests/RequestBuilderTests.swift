@@ -246,6 +246,34 @@ import Testing
     }
   }
 
+  // The API can reject a replayed thinking block once the conversation before
+  // it has changed, and the system prompt is part of that conversation. A
+  // session replays earlier turns' thinking on every request, so a guided turn
+  // must not send a different `system` than the plain turns around it. The API
+  // shows the model the schema on its own.
+  @Test func `a schema leaves system, tools and messages as a plain turn sends them`() throws {
+    let transcript = Transcript(entries: [
+      .instructions(.init(segments: [.text(.init(content: "Be concise."))], toolDefinitions: [])),
+      .prompt(.init(segments: [.text(.init(content: "Plan a trip"))])),
+    ])
+    let tools: [Transcript.ToolDefinition] = [
+      .init(name: "getWeather", description: "Weather.", parameters: TestArgs.generationSchema)
+    ]
+    let plain = try RequestBuilder.build(
+      from: .make(transcript: transcript, enabledTools: tools),
+      model: .sonnet4_6
+    )
+    let guided = try RequestBuilder.build(
+      from: .make(transcript: transcript, enabledTools: tools, schema: TestArgs.generationSchema),
+      model: .sonnet4_6
+    )
+    #expect(guided.request.outputConfig?.format != nil)
+    #expect(guided.request.system == "Be concise.")
+    #expect(guided.request.system == plain.request.system)
+    #expect(guided.request.tools == plain.request.tools)
+    #expect(guided.request.messages == plain.request.messages)
+  }
+
   @Test func `a schema on a model without structured output fails loudly`() throws {
     // A schema is a contract, not a hint — dropping it silently would surface
     // later as a decode failure.
