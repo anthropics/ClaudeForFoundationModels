@@ -422,6 +422,7 @@ struct StubbedClaudeModel: LanguageModel {
   let capabilitySet: [LanguageModelCapabilities.Capability]
   let model: ClaudeModel
   let fallbacks: ClaudeFallbacks
+  let userProfileID: String?
 
   init(
     transport: MockTransport,
@@ -429,7 +430,8 @@ struct StubbedClaudeModel: LanguageModel {
     attestSession: AppAttestSession? = nil,
     capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling, .reasoning],
     model: ClaudeModel = .sonnet5,
-    fallbacks: ClaudeFallbacks = []
+    fallbacks: ClaudeFallbacks = [],
+    userProfileID: String? = nil
   ) {
     self.transport = transport
     self.auth = auth
@@ -437,6 +439,7 @@ struct StubbedClaudeModel: LanguageModel {
     self.capabilitySet = capabilities
     self.model = model
     self.fallbacks = fallbacks
+    self.userProfileID = userProfileID
   }
 
   init(fixture: Data) {
@@ -453,7 +456,8 @@ struct StubbedClaudeModel: LanguageModel {
       auth: auth,
       attestSession: attestSession,
       model: model,
-      fallbacks: fallbacks
+      fallbacks: fallbacks,
+      userProfileID: userProfileID
     )
   }
 }
@@ -467,10 +471,11 @@ struct StubbedExecutor: LanguageModelExecutor {
     let attestSession: AppAttestSession?
     var model: ClaudeModel = .sonnet5
     var fallbacks: ClaudeFallbacks = []
+    var userProfileID: String? = nil
 
     static func == (a: Self, b: Self) -> Bool {
       a.transport === b.transport && a.auth == b.auth && a.attestSession === b.attestSession
-        && a.model == b.model && a.fallbacks == b.fallbacks
+        && a.model == b.model && a.fallbacks == b.fallbacks && a.userProfileID == b.userProfileID
     }
 
     func hash(into hasher: inout Hasher) {
@@ -490,7 +495,8 @@ struct StubbedExecutor: LanguageModelExecutor {
         baseURL: URL(string: "https://stub.invalid")!,
         authMode: configuration.auth,
         timeout: 5,
-        fallbacks: configuration.fallbacks
+        fallbacks: configuration.fallbacks,
+        userProfileID: configuration.userProfileID
       ),
       transport: configuration.transport,
       attestSession: configuration.attestSession

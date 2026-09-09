@@ -56,6 +56,16 @@ import DeviceCheck
     #expect(serverDefault.executorConfiguration.fallbacks == .serverDefault)
   }
 
+  @Test func `a user profile flows into the executor configuration`() {
+    let model = ClaudeLanguageModel(name: .opus5, auth: .apiKey("k"), userProfileID: "uprof_1")
+    #expect(model.userProfileID == "uprof_1")
+    #expect(model.executorConfiguration.userProfileID == "uprof_1")
+    #expect(
+      ClaudeLanguageModel(name: .opus5, auth: .apiKey("k")).executorConfiguration.userProfileID
+        == nil
+    )
+  }
+
   // Each fallback gets the closest effort level it accepts, so the fixed
   // effort is checked against the requested model alone.
   @Test func `a fixed effort is checked against the model, not its fallbacks`() {

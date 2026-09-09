@@ -196,6 +196,16 @@ Enclave signature and one short round trip (two after an app relaunch);
 renewal never repeats the attestation.
 Credentials are device-bound and never sync or back up.
 
+### User profiles
+
+If your app makes requests on behalf of its users, attribute each request to that user's profile. Your backend creates one profile per user with the API's user profiles endpoints (`/v1/user_profiles`). It stores the profile's ID with the user, and passes that ID to the app. The app then passes the ID when it creates the model:
+
+```swift
+ClaudeLanguageModel(name: .opus5, auth: auth, userProfileID: profileID)
+```
+
+The bridge sends the ID in the `anthropic-user-profile-id` header on every request, along with the `user-profiles-2026-08-18` beta. The API checks the ID, so an unknown ID fails the request. With `.proxied`, the relay has to forward both headers.
+
 ## Streaming
 
 `streamResponse(to:)` returns the response incrementally. Each element is a cumulative snapshot:

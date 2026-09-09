@@ -64,6 +64,52 @@ import Testing
     #expect(fallbacks.first?.count == 1)
   }
 
+  // The profile's beta goes after the proxy's and the fallbacks' betas. The
+  // configured profile replaces a proxy header of the same name, however it's
+  // spelled, so the request carries one profile.
+  @Test func `a user profile reaches the wire, after the other betas`() async throws {
+    let transport = MockTransport(body: okStream)
+    let session = LanguageModelSession(
+      model: StubbedClaudeModel(
+        transport: transport,
+        auth: .proxied(
+          headers: ["Anthropic-Beta": "feature-1", "Anthropic-User-Profile-Id": "uprof_stale"]
+        ),
+        model: .opus5,
+        fallbacks: [.opus4_8],
+        userProfileID: "uprof_test_1"
+      )
+    )
+
+    _ = try await session.respond(to: "hi")
+
+    let request = try #require(transport.lastRequest)
+    #expect(request.value(forHTTPHeaderField: "anthropic-user-profile-id") == "uprof_test_1")
+    #expect(
+      request.value(forHTTPHeaderField: "anthropic-beta")
+        == "feature-1,\(Fallbacks.betaHeader),\(UserProfiles.betaHeader)"
+    )
+    let names = request.allHTTPHeaderFields?.keys
+      .filter {
+        $0.caseInsensitiveCompare(HeaderName.userProfileID) == .orderedSame
+      }
+    #expect(names?.count == 1)
+  }
+
+  @Test func `setting a header replaces it, however its name is spelled`() {
+    #expect(
+      ClaudeExecutor.headers(
+        ["Anthropic-User-Profile-Id": "uprof_old", "X-App-Token": "abc"],
+        setting: HeaderName.userProfileID,
+        to: "uprof_new"
+      ) == ["Anthropic-User-Profile-Id": "uprof_new", "X-App-Token": "abc"]
+    )
+    #expect(
+      ClaudeExecutor.headers([:], setting: HeaderName.userProfileID, to: "uprof_new")
+        == ["anthropic-user-profile-id": "uprof_new"]
+    )
+  }
+
   @Test func `a beta joins anthropic-beta once, however the header is spelled`() {
     #expect(
       ClaudeExecutor.headers(["X-App-Token": "abc"], addingBetas: []) == ["X-App-Token": "abc"]

@@ -29,6 +29,7 @@ public struct ClaudeLanguageModel: Sendable {
   public let serverTools: Set<ClaudeServerTool>
   public let fixedEffort: ClaudeModel.Effort?
   public let fallbacks: ClaudeFallbacks
+  public let userProfileID: String?
   let authMode: AuthMode
 
   /// - Parameters:
@@ -38,6 +39,12 @@ public struct ClaudeLanguageModel: Sendable {
   ///   - auth: Credential mode. `.apiKey` for prototyping; `.proxied` with a
   ///     custom `baseURL` to route through a developer-run relay that adds
   ///     credentials server-side.
+  ///   - userProfileID: The user profile to attribute every request to, when
+  ///     the app acts on behalf of someone other than your organization. This
+  ///     is the ID of a profile you created with the API's user profiles
+  ///     endpoints, and it starts with `uprof_`. It's sent in the
+  ///     `anthropic-user-profile-id` header. The API checks it, so a malformed
+  ///     or unknown ID fails the request. `nil` sends no profile.
   ///   - fixedEffort: Claude effort level, sent as `output_config.effort` on
   ///     every request. Fixed for the life of the model value: it takes
   ///     precedence over the framework's per-request reasoning hint, and is
@@ -62,6 +69,7 @@ public struct ClaudeLanguageModel: Sendable {
   public init(
     name: ClaudeModel,
     auth: AuthMode,
+    userProfileID: String? = nil,
     fixedEffort: ClaudeModel.Effort? = nil,
     fallbacks: ClaudeFallbacks = [],
     serverTools: Set<ClaudeServerTool> = [],
@@ -81,6 +89,7 @@ public struct ClaudeLanguageModel: Sendable {
     self.authMode = auth
     self.fixedEffort = fixedEffort
     self.fallbacks = fallbacks
+    self.userProfileID = userProfileID
     self.serverTools = serverTools
     self.baseURL = baseURL
     self.timeout = timeout
@@ -132,7 +141,8 @@ extension ClaudeLanguageModel: LanguageModel {
       serverTools: serverTools,
       timeout: timeout,
       fixedEffort: fixedEffort,
-      fallbacks: fallbacks
+      fallbacks: fallbacks,
+      userProfileID: userProfileID
     )
   }
 }
