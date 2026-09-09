@@ -1013,6 +1013,216 @@ import Testing
     let exec = try #require(tools.first { $0["name"] as? String == "code_execution" })
     #expect(exec["type"] as? String == "code_execution_20260120")
   }
+
+  // MARK: - Fallbacks
+
+  private var hi: LanguageModelExecutorGenerationRequest {
+    .make(
+      transcript: Transcript(entries: [.prompt(.init(segments: [.text(.init(content: "Hi"))]))])
+    )
+  }
+
+  @Test func `fallbacks go on the request with the fallbacks opt-in`() throws {
+    let built = try RequestBuilder.build(from: hi, model: .opus5, fallbacks: [.opus4_8])
+    // Opus 4.8 takes everything the request sends, so its entry names it and
+    // nothing else.
+    #expect(built.request.fallbacks == .models([Fallback(model: "claude-opus-4-8")]))
+    #expect(built.betas == [Fallbacks.betaHeader])
+
+    let plain = try RequestBuilder.build(from: hi, model: .opus5)
+    #expect(plain.request.fallbacks == nil)
+    #expect(plain.betas.isEmpty)
+
+    let none = try RequestBuilder.build(from: hi, model: .opus5, fallbacks: [])
+    #expect(none.request.fallbacks == nil)
+    #expect(none.betas.isEmpty)
+  }
+
+  @Test func `the model's own fallback configuration goes as default`() throws {
+    let built = try RequestBuilder.build(from: hi, model: .opus5, fallbacks: .serverDefault)
+    #expect(built.request.fallbacks == .serverDefault)
+    #expect(built.betas == [Fallbacks.defaultRoutingBetaHeader])
+  }
+
+  @Test func `a fallback gets the thinking and effort its own capabilities allow`() throws {
+    var contextOptions = ContextOptions()
+    contextOptions.reasoningLevel = .deep
+    let request = LanguageModelExecutorGenerationRequest.make(
+      transcript: Transcript(entries: [.prompt(.init(segments: [.text(.init(content: "Hi"))]))]),
+      contextOptions: contextOptions
+    )
+    let thinker = ClaudeModel(
+      id: "claude-thinker",
+      capabilities: .init(effortLevels: [.high], adaptiveThinking: true)
+    )
+    let twin = ClaudeModel(id: "claude-twin", capabilities: thinker.capabilities)
+    let plain = ClaudeModel(id: "claude-plain", capabilities: .init())
+
+    // A fallback entry can't unset a field. So a fallback that can't take the
+    // request's thinking gets thinking turned off, and one that can't take its
+    // effort gets an `output_config` without one.
+    let built = try RequestBuilder.build(from: request, model: thinker, fallbacks: [plain, twin])
+    #expect(built.request.thinking == .adaptive(display: .summarized))
+    #expect(built.request.outputConfig?.effort == .high)
+    #expect(
+      built.request.fallbacks
+        == .models([
+          Fallback(model: "claude-plain", thinking: .disabled, outputConfig: OutputConfig()),
+          Fallback(model: "claude-twin"),
+        ])
+    )
+
+    // A fallback gets what the requested model can't take.
+    let reversed = try RequestBuilder.build(from: request, model: plain, fallbacks: [thinker])
+    #expect(reversed.request.thinking == nil)
+    #expect(reversed.request.outputConfig == nil)
+    #expect(
+      reversed.request.fallbacks
+        == .models([
+          Fallback(
+            model: "claude-thinker",
+            thinking: .adaptive(display: .summarized),
+            outputConfig: OutputConfig(effort: .high)
+          )
+        ])
+    )
+  }
+
+  // A fallback's `output_config` replaces the request's whole object, so it
+  // has to carry the schema along with the fallback's own effort.
+  @Test func `a fallback's output_config keeps the request's schema`() throws {
+    var contextOptions = ContextOptions()
+    contextOptions.reasoningLevel = .deep
+    let request = LanguageModelExecutorGenerationRequest.make(
+      transcript: Transcript(entries: [.prompt(.init(segments: [.text(.init(content: "Hi"))]))]),
+      schema: TestArgs.generationSchema,
+      contextOptions: contextOptions
+    )
+    let thinker = ClaudeModel(
+      id: "claude-thinker",
+      capabilities: .init(effortLevels: [.high], adaptiveThinking: true, structuredOutput: true)
+    )
+    let steady = ClaudeModel(
+      id: "claude-steady",
+      capabilities: .init(adaptiveThinking: true, structuredOutput: true)
+    )
+
+    let built = try RequestBuilder.build(from: request, model: thinker, fallbacks: [steady])
+    let format = try #require(built.request.outputConfig?.format)
+    #expect(built.request.outputConfig?.effort == .high)
+    #expect(
+      built.request.fallbacks
+        == .models([Fallback(model: "claude-steady", outputConfig: OutputConfig(format: format))])
+    )
+  }
+
+  // A fixed effort is a contract for the requested model. A fallback gets the
+  // closest level it accepts, rather than a level it would reject.
+  @Test func `a fixed effort gives each fallback the closest level it accepts`() throws {
+    let model = ClaudeModel(
+      id: "claude-all",
+      capabilities: .init(effortLevels: [.low, .medium, .high, .xhigh, .max])
+    )
+    let lowAndMax = ClaudeModel(
+      id: "claude-low-max",
+      capabilities: .init(effortLevels: [.low, .max])
+    )
+    let middle = ClaudeModel(id: "claude-mid", capabilities: .init(effortLevels: [.medium, .high]))
+    let none = ClaudeModel(id: "claude-none", capabilities: .init())
+
+    let built = try RequestBuilder.build(
+      from: hi,
+      model: model,
+      fixedEffort: .xhigh,
+      fallbacks: [lowAndMax, middle, none]
+    )
+    #expect(built.request.outputConfig?.effort == .xhigh)
+    #expect(
+      built.request.fallbacks
+        == .models([
+          Fallback(model: "claude-low-max", outputConfig: OutputConfig(effort: .max)),
+          Fallback(model: "claude-mid", outputConfig: OutputConfig(effort: .high)),
+          Fallback(model: "claude-none", outputConfig: OutputConfig()),
+        ])
+    )
+
+    // A tie goes to the lower level.
+    #expect(RequestBuilder.closestEffort(to: .high, in: [.medium, .xhigh]) == .medium)
+    #expect(RequestBuilder.closestEffort(to: .low, in: [.high, .max]) == .high)
+    #expect(RequestBuilder.closestEffort(to: .max, in: []) == nil)
+  }
+
+  @Test func `sampling flows only when every model that may serve the request takes it`() throws {
+    var options = GenerationOptions()
+    options.temperature = 0.5
+    let request = LanguageModelExecutorGenerationRequest.make(
+      transcript: Transcript(entries: [.prompt(.init(segments: [.text(.init(content: "Hi"))]))]),
+      generationOptions: options
+    )
+    let sampler = ClaudeModel(id: "claude-sampler", capabilities: .init(samplingParams: true))
+    let twin = ClaudeModel(id: "claude-twin", capabilities: .init(samplingParams: true))
+    let strict = ClaudeModel(id: "claude-strict", capabilities: .init())
+    let thinker = ClaudeModel(
+      id: "claude-thinker",
+      capabilities: .init(samplingParams: true, adaptiveThinking: true)
+    )
+
+    let shared = try RequestBuilder.build(from: request, model: sampler, fallbacks: [twin])
+    #expect(shared.request.temperature == 0.5)
+    // A fallback entry can't unset sampling, so one model that rejects it, or
+    // that would think, keeps it off the request.
+    let rejected = try RequestBuilder.build(from: request, model: sampler, fallbacks: [strict])
+    #expect(rejected.request.temperature == nil)
+    let thinking = try RequestBuilder.build(from: request, model: sampler, fallbacks: [thinker])
+    #expect(thinking.request.temperature == nil)
+  }
+
+  @Test func `a schema fails loudly when a fallback can't honor it`() throws {
+    let request = LanguageModelExecutorGenerationRequest.make(
+      transcript: Transcript(entries: [.prompt(.init(segments: [.text(.init(content: "Hi"))]))]),
+      schema: TestArgs.generationSchema
+    )
+    let unstructured = ClaudeModel(id: "claude-unstructured", capabilities: .init())
+    #expect(throws: LanguageModelError.self) {
+      try RequestBuilder.build(from: request, model: .sonnet4_6, fallbacks: [unstructured])
+    }
+    // The model's own configuration names no model that the bridge can check.
+    let built = try RequestBuilder.build(
+      from: request,
+      model: .sonnet4_6,
+      fallbacks: .serverDefault
+    )
+    #expect(built.request.outputConfig?.format != nil)
+  }
+
+  // A `fallback` block marks where one model's thinking ends. The API rejects
+  // a replay that keeps that thinking without the block, and it parses the
+  // block only under the fallbacks opt-in.
+  @Test func `a replayed handover stays in place and opts the request in`() throws {
+    let thinking: JSONValue = ["type": "thinking", "thinking": "Hmm.", "signature": "c2ln"]
+    let before: JSONValue = ["type": "text", "text": "Sure, here"]
+    let handover: JSONValue = [
+      "type": "fallback", "from": ["model": "claude-fable-5"], "to": ["model": "claude-opus-4-8"],
+      "trigger": ["type": "refusal", "category": "cyber"],
+    ]
+    let after: JSONValue = ["type": "text", "text": " it is."]
+    let transcript = Transcript(entries: [
+      .prompt(.init(segments: [.text(.init(content: "Hi"))])),
+      recordedReasoning(thinking, at: 0),
+      recordedResponse([before, handover, after], from: 1),
+      .prompt(.init(segments: [.text(.init(content: "Thanks"))])),
+    ])
+
+    // This request names no fallbacks.
+    let built = try RequestBuilder.build(from: .make(transcript: transcript), model: .opus5)
+    #expect(built.request.fallbacks == nil)
+    #expect(built.betas == [Fallbacks.betaHeader])
+    #expect(built.request.messages.count == 3)
+    #expect(
+      built.request.messages[1].content
+        == [.raw(thinking), .raw(before), .raw(handover), .raw(after)]
+    )
+  }
 }
 
 @Generable

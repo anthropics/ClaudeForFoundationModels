@@ -27,6 +27,9 @@ struct EventTranslator: Sendable {
   /// metadata updates replace wholesale, so all of it is sent each time it
   /// grows.
   private var responseStored: [String] = []
+  /// The model the latest response's `message_start` named, recorded on the
+  /// response entry.
+  private var model: String?
   /// Prompt-side and output totals of the responses already finished, so a
   /// continued turn reports the whole turn's usage.
   private var settledUsage = TurnUsage()
@@ -81,6 +84,9 @@ struct EventTranslator: Sendable {
     /// A server-side tool call: an empty text segment with the call's id
     /// holds its place among the prose; the block itself is only recorded.
     case serverToolUse(id: String)
+    /// A model handover: like a server-side call, an empty text segment holds
+    /// its place among the prose, and the block itself is only recorded.
+    case fallback
     /// Server-side tool results and anything unrecognized: nothing streams to
     /// the framework, the block is only recorded.
     case responseRecordOnly
@@ -129,6 +135,7 @@ struct EventTranslator: Sendable {
       switch event {
       case .messageStart(let response):
         currentUsage = TurnUsage(usage: response.usage)
+        model = response.model
 
       case .contentBlockStart(let index, let block):
         let target = Self.target(for: block)
@@ -193,6 +200,7 @@ struct EventTranslator: Sendable {
     case .thinking, .redactedThinking: .thinking(entryID: UUID().uuidString)
     case .toolUse(let id, let name): .toolUse(id: id, name: name)
     case .serverToolUse(let id, _, _): .serverToolUse(id: id)
+    case .fallback: .fallback
     case .serverToolResult, .other: .responseRecordOnly
     }
   }
@@ -282,21 +290,29 @@ struct EventTranslator: Sendable {
         )
       )
 
-    case .text, .serverToolUse, .responseRecordOnly, nil:
+    case .text, .serverToolUse, .fallback, .responseRecordOnly, nil:
       responseStored.append(block.stored)
       await channel.send(
         .response(
           entryID: responseEntryID,
-          action: .updateMetadata(TurnRecord.metadata(turn: turn, stored: responseStored))
+          action: .updateMetadata(
+            TurnRecord.metadata(turn: turn, stored: responseStored, model: model)
+          )
         )
       )
-      // The placeholder goes in once its call is on the record, so the
+      // The placeholder goes in once its block is on the record, so the
       // snapshot it triggers can already resolve it.
-      if case .serverToolUse(let id) = target {
+      let placeholderID: String? =
+        switch target {
+        case .serverToolUse(let id): id
+        case .fallback: ClaudeModelHandover.segmentID(turn: turn, position: block.position)
+        default: nil
+        }
+      if let placeholderID {
         await channel.send(
           .response(
             entryID: responseEntryID,
-            action: .appendText("", segmentID: id, tokenCount: Self.deltaTokenCount)
+            action: .appendText("", segmentID: placeholderID, tokenCount: Self.deltaTokenCount)
           )
         )
       }

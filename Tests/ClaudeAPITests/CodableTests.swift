@@ -34,6 +34,57 @@ import Testing
     #expect((json["tools"] as? [[String: Any]])?.first?["input_schema"] != nil)
   }
 
+  // A fallback entry's field replaces the request's whole field for that
+  // model, and the API reads `null` as "keep the request's value". So an entry
+  // writes only the fields it overrides, and each one is complete.
+  @Test func `fallback entries write only the fields they override`() throws {
+    let entries: [Fallback] = [
+      .init(model: "claude-a"),
+      .init(
+        model: "claude-b",
+        thinking: .adaptive(display: .summarized),
+        outputConfig: .init(effort: .low)
+      ),
+      .init(model: "claude-c", thinking: .disabled, outputConfig: .init()),
+    ]
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys
+    let data = try encoder.encode(Fallbacks.models(entries))
+    #expect(
+      String(decoding: data, as: UTF8.self)
+        == #"[{"model":"claude-a"},"#
+        + #"{"model":"claude-b","output_config":{"effort":"low"},"#
+        + #""thinking":{"display":"summarized","type":"adaptive"}},"#
+        + #"{"model":"claude-c","output_config":{},"thinking":{"type":"disabled"}}]"#
+    )
+    #expect(try JSONDecoder().decode(Fallbacks.self, from: data) == .models(entries))
+  }
+
+  @Test func `each form of fallbacks names the beta it needs`() {
+    #expect(Fallbacks.models([.init(model: "claude-a")]).requiredBeta == Fallbacks.betaHeader)
+    #expect(Fallbacks.serverDefault.requiredBeta == Fallbacks.defaultRoutingBetaHeader)
+    #expect(Fallbacks.betaHeader == "server-side-fallback-2026-06-01")
+    #expect(Fallbacks.defaultRoutingBetaHeader == "server-side-fallback-2026-07-01")
+  }
+
+  @Test func `a request sends fallbacks only when it has some`() throws {
+    let withDefault = MessagesRequest(
+      model: "claude-a",
+      messages: [.user("hi")],
+      fallbacks: .serverDefault
+    )
+    let json = try #require(
+      try JSONSerialization.jsonObject(with: JSONEncoder().encode(withDefault)) as? [String: Any]
+    )
+    #expect(json["fallbacks"] as? String == "default")
+
+    let plain = MessagesRequest(model: "claude-a", messages: [.user("hi")])
+    let plainJSON = try #require(
+      try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
+    )
+    #expect(plainJSON["fallbacks"] == nil)
+  }
+
   @Test func `decodes a text delta event`() throws {
     let payload =
       #"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#

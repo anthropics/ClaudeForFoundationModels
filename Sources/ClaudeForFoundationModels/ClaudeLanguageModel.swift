@@ -28,6 +28,7 @@ public struct ClaudeLanguageModel: Sendable {
   public let timeout: TimeInterval
   public let serverTools: Set<ClaudeServerTool>
   public let fixedEffort: ClaudeModel.Effort?
+  public let fallbacks: ClaudeFallbacks
   let authMode: AuthMode
 
   /// - Parameters:
@@ -44,7 +45,13 @@ public struct ClaudeLanguageModel: Sendable {
   ///     ``ClaudeModel/Effort/max``, which the framework's reasoning levels
   ///     don't express. Must be a level the model accepts
   ///     (``ClaudeModel/Capabilities/effortLevels``) — checked at
-  ///     initialization.
+  ///     initialization. Each of the `fallbacks` gets the closest level it
+  ///     accepts.
+  ///   - fallbacks: Substitute models the API tries, in order, when `name`
+  ///     declines a request for policy reasons. See ``ClaudeFallbacks``.
+  ///     A fallback can narrow what the model offers. Images and guided
+  ///     generation need every model in the chain to support them, and
+  ///     sampling parameters are sent only when every model accepts them.
   ///   - serverTools: Tools that execute on Anthropic's infrastructure
   ///     (web search, code execution). Distinct from the framework's
   ///     `tools:` array, which the framework invokes client-side.
@@ -56,6 +63,7 @@ public struct ClaudeLanguageModel: Sendable {
     name: ClaudeModel,
     auth: AuthMode,
     fixedEffort: ClaudeModel.Effort? = nil,
+    fallbacks: ClaudeFallbacks = [],
     serverTools: Set<ClaudeServerTool> = [],
     baseURL: URL = ClaudeLanguageModel.defaultBaseURL,
     timeout: TimeInterval = 60
@@ -72,6 +80,7 @@ public struct ClaudeLanguageModel: Sendable {
     self.model = name
     self.authMode = auth
     self.fixedEffort = fixedEffort
+    self.fallbacks = fallbacks
     self.serverTools = serverTools
     self.baseURL = baseURL
     self.timeout = timeout
@@ -100,12 +109,18 @@ extension ClaudeLanguageModel: LanguageModel {
   public typealias Executor = ClaudeExecutor
 
   /// Derived from the model's ``ClaudeModel/Capabilities`` so the framework
-  /// only routes work the bridge will actually send.
+  /// only routes work the bridge will actually send. Images and guided
+  /// generation are contracts, so they need every model in
+  /// ``fallbacks`` to support them as well. Reasoning is a hint, so it
+  /// follows the requested model alone.
   public var capabilities: LanguageModelCapabilities {
+    let chain = [model] + fallbacks.knownModels
     var capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling]
-    if model.capabilities.imageInput { capabilities.append(.vision) }
+    if chain.allSatisfy(\.capabilities.imageInput) { capabilities.append(.vision) }
     if model.capabilities.adaptiveThinking { capabilities.append(.reasoning) }
-    if model.capabilities.structuredOutput { capabilities.append(.guidedGeneration) }
+    if chain.allSatisfy(\.capabilities.structuredOutput) {
+      capabilities.append(.guidedGeneration)
+    }
     return LanguageModelCapabilities(capabilities)
   }
 
@@ -116,7 +131,8 @@ extension ClaudeLanguageModel: LanguageModel {
       authMode: authMode,
       serverTools: serverTools,
       timeout: timeout,
-      fixedEffort: fixedEffort
+      fixedEffort: fixedEffort,
+      fallbacks: fallbacks
     )
   }
 }

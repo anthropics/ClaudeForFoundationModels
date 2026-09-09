@@ -34,6 +34,41 @@ import DeviceCheck
     #expect(!limited.capabilities.contains(.guidedGeneration))
   }
 
+  // Images and a schema are contracts, so every model that may serve the
+  // request has to take them. Reasoning is a hint, so it follows the model.
+  @Test func `fallbacks narrow the contracts but not the hints`() {
+    let plain = ClaudeModel(id: "claude-plain", capabilities: .init())
+    let model = ClaudeLanguageModel(name: .opus5, auth: .apiKey("k"), fallbacks: [plain])
+    #expect(model.capabilities.contains(.toolCalling))
+    #expect(model.capabilities.contains(.reasoning))
+    #expect(!model.capabilities.contains(.vision))
+    #expect(!model.capabilities.contains(.guidedGeneration))
+    #expect(model.executorConfiguration.fallbacks == [plain])
+
+    // The model's own configuration names no model to check.
+    let serverDefault = ClaudeLanguageModel(
+      name: .opus5,
+      auth: .apiKey("k"),
+      fallbacks: .serverDefault
+    )
+    #expect(serverDefault.capabilities.contains(.vision))
+    #expect(serverDefault.capabilities.contains(.guidedGeneration))
+    #expect(serverDefault.executorConfiguration.fallbacks == .serverDefault)
+  }
+
+  // Each fallback gets the closest effort level it accepts, so the fixed
+  // effort is checked against the requested model alone.
+  @Test func `a fixed effort is checked against the model, not its fallbacks`() {
+    let plain = ClaudeModel(id: "claude-plain", capabilities: .init())
+    let model = ClaudeLanguageModel(
+      name: .opus5,
+      auth: .apiKey("k"),
+      fixedEffort: .xhigh,
+      fallbacks: [plain]
+    )
+    #expect(model.executorConfiguration.fixedEffort == .xhigh)
+  }
+
   @Test func `a fixed effort flows into the executor configuration`() {
     let model = ClaudeLanguageModel(name: .opus4_8, auth: .apiKey("k"), fixedEffort: .max)
     #expect(model.executorConfiguration.fixedEffort == .max)

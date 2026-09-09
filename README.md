@@ -113,6 +113,30 @@ The framework's reasoning levels map to effort per request: `.light` → `low`, 
 
 The level must be one the model accepts — each model declares which of the five levels (`low`, `medium`, `high`, `xhigh`, `max`) it takes.
 
+### Fallbacks
+
+Some models decline requests in certain policy areas, such as cybersecurity or biology. Name fallback models with `fallbacks:`, and the API retries a declined request on them, in order, within the same request:
+
+```swift
+ClaudeLanguageModel(name: .opus5, auth: auth, fallbacks: [.opus4_8])
+```
+
+You can name up to three fallbacks, and each one must be a model that the requested model allows as a fallback. To use the requested model's default fallback configuration instead, pass `fallbacks: .serverDefault`. The API then picks the fallback that's recommended for the policy area of the refusal, and for an area with no recommended fallback, the refusal stands.
+
+A model can decline after it has started to answer. The fallback model then continues from the declining model's text, so the response reads as one answer. An empty text segment marks the handover, and the response entry reports it:
+
+```swift
+for case .response(let entry) in session.transcript {
+  if let handover = entry.claudeHandovers.last {
+    print("\(handover.fromModelID) declined, and \(handover.toModelID) finished the answer")
+  }
+}
+```
+
+After a fallback, the API serves the conversation's next requests straight from the fallback model, for about an hour. Those responses have no handover. To see which model served a response, use `entry.claudeModelID`.
+
+Each fallback gets the thinking and effort it accepts, the same way the requested model does. With `fixedEffort:`, each fallback gets the closest level it accepts. A fallback can also narrow what the model offers. A schema or an image needs every model in the chain to support it, and sampling parameters are sent only when every model accepts them. `session.usage` counts the tokens of the model that served each response, not the tokens of a declined attempt. With `.proxied`, the relay has to forward the `anthropic-beta` header, because fallbacks need it.
+
 ## Authentication
 
 Set the credential with the `auth:` parameter.

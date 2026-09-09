@@ -20,6 +20,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
     public let serverTools: Set<ClaudeServerTool>
     public let timeout: TimeInterval
     public let fixedEffort: ClaudeModel.Effort?
+    public let fallbacks: ClaudeFallbacks
 
     public init(
       model: ClaudeModel,
@@ -27,7 +28,8 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       authMode: AuthMode,
       serverTools: Set<ClaudeServerTool> = [],
       timeout: TimeInterval,
-      fixedEffort: ClaudeModel.Effort? = nil
+      fixedEffort: ClaudeModel.Effort? = nil,
+      fallbacks: ClaudeFallbacks = []
     ) {
       self.model = model
       self.baseURL = baseURL
@@ -35,6 +37,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       self.serverTools = serverTools
       self.timeout = timeout
       self.fixedEffort = fixedEffort
+      self.fallbacks = fallbacks
     }
   }
 
@@ -123,7 +126,8 @@ public struct ClaudeExecutor: LanguageModelExecutor {
         from: request,
         model: configuration.model,
         fixedEffort: configuration.fixedEffort,
-        serverTools: configuration.serverTools
+        serverTools: configuration.serverTools,
+        fallbacks: configuration.fallbacks
       )
       var translator = EventTranslator()
       var request = built.request
@@ -132,7 +136,12 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       // when the content so far is sent back. A pause that delivered nothing
       // would be re-sent unchanged, so it ends the turn instead.
       while true {
-        let stopReason = try await send(request, translating: &translator, into: channel)
+        let stopReason = try await send(
+          request,
+          betas: built.betas,
+          translating: &translator,
+          into: channel
+        )
         let content = translator.continuationContent
         guard stopReason == .pauseTurn, content.count > sentCount else { return }
         try Task.checkCancellation()
@@ -158,11 +167,13 @@ public struct ClaudeExecutor: LanguageModelExecutor {
   /// turn's translator, refreshing a rejected App Attest token once.
   private func send(
     _ request: MessagesRequest,
+    betas: [String],
     translating translator: inout EventTranslator,
     into channel: LanguageModelExecutorGenerationChannel
   ) async throws -> StopReason? {
     let channelWritten = Mutex(false)
-    let (headers, bearer) = try await authContext()
+    let (authHeaders, bearer) = try await authContext()
+    let headers = Self.headers(authHeaders, addingBetas: betas)
     do {
       return try await translator.translate(
         client.stream(request, headers: headers),
@@ -181,7 +192,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       let (retryHeaders, retryBearer) = try await authContext()
       do {
         return try await translator.translate(
-          client.stream(request, headers: retryHeaders),
+          client.stream(request, headers: Self.headers(retryHeaders, addingBetas: betas)),
           into: channel
         )
       } catch let error as APIError where error.kind == .authentication {
@@ -189,6 +200,24 @@ public struct ClaudeExecutor: LanguageModelExecutor {
         throw error
       }
     }
+  }
+
+  /// `headers` with `betas` added to `anthropic-beta`, after any values the
+  /// headers already carry there (a proxy's, under ``AuthMode/proxied(headers:)``).
+  /// Header names are case-insensitive, so an existing spelling of the name
+  /// is kept.
+  static func headers(_ headers: [String: String], addingBetas betas: [String]) -> [String: String]
+  {
+    guard !betas.isEmpty else { return headers }
+    let name =
+      headers.keys.first { $0.caseInsensitiveCompare("anthropic-beta") == .orderedSame }
+      ?? "anthropic-beta"
+    let present = (headers[name] ?? "").split(separator: ",")
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.isEmpty }
+    var merged = headers
+    merged[name] = (present + betas.filter { !present.contains($0) }).joined(separator: ",")
+    return merged
   }
 
   /// Per-request headers merged over `ClaudeClient`'s defaults, and the
