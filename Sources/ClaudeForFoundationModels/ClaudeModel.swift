@@ -42,19 +42,28 @@ public struct ClaudeModel: Sendable, Hashable {
     public var structuredOutput: Bool
     /// Image content blocks.
     public var imageInput: Bool
+    /// `tool_choice` `any` / `tool` — requiring the model to call a tool,
+    /// which is what the framework's `.required` tool-calling mode asks
+    /// for. Unlike the other capabilities this defaults to `true`: models
+    /// have historically accepted it, and a wrong `true` fails loudly (the
+    /// API names `tool_choice`) rather than degrading the request, whereas
+    /// a wrong `false` would refuse a mode the model supports.
+    public var forcedToolUse: Bool
 
     public init(
       samplingParams: Bool = false,
       effortLevels: Set<Effort> = [],
       adaptiveThinking: Bool = false,
       structuredOutput: Bool = false,
-      imageInput: Bool = false
+      imageInput: Bool = false,
+      forcedToolUse: Bool = true
     ) {
       self.samplingParams = samplingParams
       self.effortLevels = effortLevels
       self.adaptiveThinking = adaptiveThinking
       self.structuredOutput = structuredOutput
       self.imageInput = imageInput
+      self.forcedToolUse = forcedToolUse
     }
   }
 

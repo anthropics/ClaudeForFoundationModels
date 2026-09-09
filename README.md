@@ -91,7 +91,7 @@ Dateless model IDs like `claude-opus-5` (the 4.6 generation onward) are pinned s
 
 ### Capabilities
 
-Each model declares what it accepts — sampling parameters, effort levels, adaptive thinking, structured output, and image input. The bridge uses this to decide which request fields to send, since sending a field a model rejects is a hard error. The constants carry the right capabilities. For an ID that isn't compiled in, declare what the model accepts:
+Each model declares what it accepts — sampling parameters, effort levels, adaptive thinking, structured output, image input, and forced tool use (the framework's `.required` tool-calling mode). The bridge uses this to decide which request fields to send, since sending a field a model rejects is a hard error. The constants carry the right capabilities. For an ID that isn't compiled in, declare what the model accepts:
 
 ```swift
 let model = ClaudeModel(

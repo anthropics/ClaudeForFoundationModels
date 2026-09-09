@@ -387,6 +387,46 @@ import Testing
     #expect(built.request.thinking == nil)
   }
 
+  @Test func `required tool calling on a model that rejects forced tool use fails loudly`() throws {
+    // A required call is a contract, not a hint — the build refuses instead
+    // of sending `tool_choice: any` for the API to reject, or silently
+    // downgrading to optional tool use.
+    let transcript = Transcript(entries: [.prompt(.init(segments: [.text(.init(content: "Hi"))]))])
+    let tools: [Transcript.ToolDefinition] = [
+      .init(name: "getWeather", description: "Weather.", parameters: TestArgs.generationSchema)
+    ]
+    let model = ClaudeModel(
+      id: "claude-test",
+      capabilities: .init(adaptiveThinking: true, forcedToolUse: false)
+    )
+    var options = GenerationOptions()
+    options.toolCallingMode = .required
+    #expect(throws: ClaudeError.forcedToolUseUnsupported) {
+      try RequestBuilder.build(
+        from: .make(transcript: transcript, enabledTools: tools, generationOptions: options),
+        model: model
+      )
+    }
+    // Optional and disallowed tool use are unaffected on the same model.
+    let optional = try RequestBuilder.build(
+      from: .make(transcript: transcript, enabledTools: tools),
+      model: model
+    )
+    #expect(optional.request.toolChoice == nil)
+    options.toolCallingMode = .disallowed
+    let disallowed = try RequestBuilder.build(
+      from: .make(transcript: transcript, enabledTools: tools, generationOptions: options),
+      model: model
+    )
+    #expect(disallowed.request.toolChoice == ToolChoice.none)
+    #expect(disallowed.request.thinking == .adaptive(display: .summarized))
+  }
+
+  @Test func `compiled-in models accept forced tool use unless they say otherwise`() {
+    #expect(ClaudeModel.Capabilities().forcedToolUse)
+    #expect(ClaudeModel.sonnet4_6.capabilities.forcedToolUse)
+  }
+
   @Test func `disallowed tool calling maps to tool_choice none and keeps thinking`() throws {
     var options = GenerationOptions()
     options.toolCallingMode = .disallowed

@@ -20,6 +20,11 @@ public enum ClaudeError: LocalizedError, Sendable {
   /// unusable response, an unreachable credential store, and a client ID
   /// already in use against a different base URL.
   case attestationFailed
+  /// The request requires a tool call (tool-calling mode `.required`) and the
+  /// model doesn't accept that — its ``ClaudeModel/Capabilities/forcedToolUse``
+  /// is `false`. Nothing was sent. Use the default tool-calling mode, or a
+  /// model that supports requiring a tool call.
+  case forcedToolUseUnsupported
 
   public var errorDescription: String? {
     switch self {
@@ -29,6 +34,8 @@ public enum ClaudeError: LocalizedError, Sendable {
       "App Attest is not supported on this device or simulator."
     case .attestationFailed:
       "App attestation failed to produce a credential."
+    case .forcedToolUseUnsupported:
+      "This Claude model can't be required to call a tool. Use the default tool-calling mode."
     }
   }
 }

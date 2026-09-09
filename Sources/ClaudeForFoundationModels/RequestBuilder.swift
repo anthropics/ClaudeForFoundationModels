@@ -30,8 +30,14 @@ enum RequestBuilder {
     // thinking active, and prior-turn thinking may always be omitted — so
     // reasoning entries replay only on requests that send `thinking`.
     let toolChoice = toolChoice(for: request.generationOptions.toolCallingMode)
-    // Forced tool use is a contract — the API rejects thinking alongside
-    // it, so thinking yields for that request.
+    // Forced tool use is a contract, not a hint: on a model that rejects
+    // `tool_choice` `any`, fail before sending rather than let the API refuse
+    // the request or quietly fall back to optional tool use.
+    if toolChoice == .any, !model.capabilities.forcedToolUse {
+      throw ClaudeError.forcedToolUseUnsupported
+    }
+    // The API rejects thinking alongside forced tool use, so thinking yields
+    // for that request.
     let thinkingConfig = toolChoice == .any ? nil : thinking(for: model)
 
     // The framework records one model turn as several consecutive entries
