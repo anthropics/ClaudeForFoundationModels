@@ -21,6 +21,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
     public let timeout: TimeInterval
     public let fixedEffort: ClaudeModel.Effort?
     public let fallbacks: ClaudeFallbacks
+    public let userProfileID: String?
 
     public init(
       model: ClaudeModel,
@@ -29,7 +30,8 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       serverTools: Set<ClaudeServerTool> = [],
       timeout: TimeInterval,
       fixedEffort: ClaudeModel.Effort? = nil,
-      fallbacks: ClaudeFallbacks = []
+      fallbacks: ClaudeFallbacks = [],
+      userProfileID: String? = nil
     ) {
       self.model = model
       self.baseURL = baseURL
@@ -38,6 +40,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       self.timeout = timeout
       self.fixedEffort = fixedEffort
       self.fallbacks = fallbacks
+      self.userProfileID = userProfileID
     }
   }
 
@@ -173,7 +176,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
   ) async throws -> StopReason? {
     let channelWritten = Mutex(false)
     let (authHeaders, bearer) = try await authContext()
-    let headers = Self.headers(authHeaders, addingBetas: betas)
+    let headers = requestHeaders(authHeaders, betas: betas)
     do {
       return try await translator.translate(
         client.stream(request, headers: headers),
@@ -192,7 +195,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       let (retryHeaders, retryBearer) = try await authContext()
       do {
         return try await translator.translate(
-          client.stream(request, headers: Self.headers(retryHeaders, addingBetas: betas)),
+          client.stream(request, headers: requestHeaders(retryHeaders, betas: betas)),
           into: channel
         )
       } catch let error as APIError where error.kind == .authentication {
@@ -202,22 +205,47 @@ public struct ClaudeExecutor: LanguageModelExecutor {
     }
   }
 
+  /// The headers for one request: the credential's (see ``authContext()``),
+  /// the user profile's, and the betas. A user profile adds its own beta.
+  private func requestHeaders(_ credential: [String: String], betas: [String]) -> [String: String] {
+    guard let userProfileID = configuration.userProfileID else {
+      return Self.headers(credential, addingBetas: betas)
+    }
+    let profiled = Self.headers(credential, setting: HeaderName.userProfileID, to: userProfileID)
+    return Self.headers(profiled, addingBetas: betas + [UserProfiles.betaHeader])
+  }
+
   /// `headers` with `betas` added to `anthropic-beta`, after any values the
   /// headers already carry there (a proxy's, under ``AuthMode/proxied(headers:)``).
-  /// Header names are case-insensitive, so an existing spelling of the name
-  /// is kept.
+  /// The list is sent joined with commas, and each value appears once.
   static func headers(_ headers: [String: String], addingBetas betas: [String]) -> [String: String]
   {
     guard !betas.isEmpty else { return headers }
-    let name =
-      headers.keys.first { $0.caseInsensitiveCompare("anthropic-beta") == .orderedSame }
-      ?? "anthropic-beta"
+    let name = spelling(of: HeaderName.beta, in: headers)
     let present = (headers[name] ?? "").split(separator: ",")
       .map { $0.trimmingCharacters(in: .whitespaces) }
       .filter { !$0.isEmpty }
     var merged = headers
     merged[name] = (present + betas.filter { !present.contains($0) }).joined(separator: ",")
     return merged
+  }
+
+  /// `headers` with `value` set for the header `name`.
+  static func headers(
+    _ headers: [String: String],
+    setting name: String,
+    to value: String
+  ) -> [String: String] {
+    var updated = headers
+    updated[spelling(of: name, in: headers)] = value
+    return updated
+  }
+
+  /// The key that `headers` uses for the header `name`, or `name` itself when
+  /// there's none. Header names are case-insensitive, so a header that's
+  /// already there keeps its spelling, and it isn't sent twice.
+  private static func spelling(of name: String, in headers: [String: String]) -> String {
+    headers.keys.first { $0.caseInsensitiveCompare(name) == .orderedSame } ?? name
   }
 
   /// Per-request headers merged over `ClaudeClient`'s defaults, and the
