@@ -17,6 +17,9 @@ package struct MessagesRequest: Sendable, Codable {
   package var topK: Int?
   package var cacheControl: CacheControl?
   package var outputConfig: OutputConfig?
+  /// Substitute models for a policy refusal. Sending any needs the
+  /// ``Fallbacks/betaHeader`` opt-in.
+  package var fallbacks: Fallbacks?
   package var stream: Bool
 
   package init(
@@ -32,6 +35,7 @@ package struct MessagesRequest: Sendable, Codable {
     topK: Int? = nil,
     cacheControl: CacheControl? = nil,
     outputConfig: OutputConfig? = nil,
+    fallbacks: Fallbacks? = nil,
     stream: Bool = false
   ) {
     self.model = model
@@ -46,11 +50,12 @@ package struct MessagesRequest: Sendable, Codable {
     self.topK = topK
     self.cacheControl = cacheControl
     self.outputConfig = outputConfig
+    self.fallbacks = fallbacks
     self.stream = stream
   }
 
   private enum CodingKeys: String, CodingKey {
-    case model, system, messages, tools, thinking, stream, temperature
+    case model, system, messages, tools, thinking, stream, temperature, fallbacks
     case maxTokens = "max_tokens"
     case toolChoice = "tool_choice"
     case topP = "top_p"

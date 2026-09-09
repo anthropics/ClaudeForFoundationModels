@@ -13,13 +13,16 @@ enum RequestBuilder {
     /// response will be a single text block of schema-conforming JSON rather
     /// than free text.
     var isStructured: Bool
+    /// `anthropic-beta` values the request needs.
+    var betas: [String] = []
   }
 
   static func build(
     from request: LanguageModelExecutorGenerationRequest,
     model: ClaudeModel,
     fixedEffort: ClaudeModel.Effort? = nil,
-    serverTools: Set<ClaudeServerTool> = []
+    serverTools: Set<ClaudeServerTool> = [],
+    fallbacks: ClaudeFallbacks = []
   ) throws -> Built {
     var system: String?
 
@@ -102,6 +105,24 @@ enum RequestBuilder {
     let allTools =
       request.enabledToolDefinitions.map(toolDefinition)
       + serverTools.compactMap(\.toolDefinition).sorted { $0.name < $1.name }
+    let effort = resolvedEffort(fixed: fixedEffort, options: request.contextOptions, model: model)
+    // A fixed effort is a contract for the requested model. A fallback gets
+    // the closest level it accepts.
+    func hopEffort(for fallback: ClaudeModel) -> OutputConfig.Effort? {
+      guard let fixedEffort else {
+        return resolvedEffort(fixed: nil, options: request.contextOptions, model: fallback)
+      }
+      let closest = closestEffort(to: fixedEffort, in: fallback.capabilities.effortLevels)
+      return closest.map { wireEffort($0) }
+    }
+    // A fallback gets the thinking and effort its own capabilities allow.
+    let hops = fallbacks.knownModels.map { fallback in
+      Hop(
+        model: fallback,
+        thinking: toolChoice == .any ? nil : thinking(for: fallback),
+        effort: hopEffort(for: fallback)
+      )
+    }
     var req = MessagesRequest(
       model: model.id,
       maxTokens: request.generationOptions.maximumResponseTokens ?? 16_000,
@@ -111,34 +132,120 @@ enum RequestBuilder {
       toolChoice: toolChoice,
       thinking: thinkingConfig,
       cacheControl: .init(),
-      outputConfig: resolvedEffort(
-        fixed: fixedEffort,
-        options: request.contextOptions,
-        model: model
-      )
-      .map { OutputConfig(effort: $0) },
+      outputConfig: effort.map { OutputConfig(effort: $0) },
       stream: true
     )
-    applySampling(request.generationOptions, to: &req, model: model)
+    // A fallback entry can't change sampling, so sampling flows only when
+    // every model that may serve the request takes it.
+    applySampling(
+      request.generationOptions,
+      to: &req,
+      allowed: model.capabilities.samplingParams
+        && hops.allSatisfy { $0.model.capabilities.samplingParams && $0.thinking == nil }
+    )
 
     let isStructured = request.schema != nil
     if let schema = request.schema {
       // Unlike effort, a schema is a contract, not a hint — without
       // constrained decoding the response may not decode at all, so failing
-      // loudly beats silently dropping it.
-      guard model.capabilities.structuredOutput else {
+      // loudly beats silently dropping it. A fallback may be the model that
+      // answers, so it has to honor the schema too.
+      let chain = [model] + fallbacks.knownModels
+      if let unsupported = chain.first(where: { !$0.capabilities.structuredOutput }) {
         throw LanguageModelError.unsupportedGenerationGuide(
           .init(
             schemaName: nil,
             debugDescription:
-              "\(model.id) does not support structured output (output_config.format)."
+              "\(unsupported.id) does not support structured output (output_config.format)."
           )
         )
       }
       applyStructuredOutput(schema, to: &req)
     }
 
-    return Built(request: req, isStructured: isStructured)
+    // A fallback's `output_config` replaces the request's whole object, so
+    // the entries are built once the request's format is set.
+    req.fallbacks = wireFallbacks(
+      fallbacks,
+      hops: hops,
+      thinking: thinkingConfig,
+      outputConfig: req.outputConfig
+    )
+
+    // A replayed `fallback` block parses only under a fallbacks opt-in, so a
+    // request that carries one opts in even when it names no fallbacks.
+    let betas: [String] =
+      if let wire = req.fallbacks {
+        [wire.requiredBeta]
+      } else if req.messages.contains(where: carriesHandover) {
+        [Fallbacks.betaHeader]
+      } else {
+        []
+      }
+    return Built(request: req, isStructured: isStructured, betas: betas)
+  }
+
+  // MARK: - Fallbacks
+
+  /// A fallback model, and the thinking and effort it gets.
+  private struct Hop {
+    var model: ClaudeModel
+    var thinking: ThinkingConfig?
+    var effort: OutputConfig.Effort?
+  }
+
+  /// `fallbacks` as sent: nothing when there are none, and otherwise one
+  /// entry per model. An entry replaces a whole field of the request for its
+  /// model. So it carries a field only when that model needs the field to be
+  /// different, and then it carries the complete value.
+  private static func wireFallbacks(
+    _ fallbacks: ClaudeFallbacks,
+    hops: [Hop],
+    thinking: ThinkingConfig?,
+    outputConfig: OutputConfig?
+  ) -> Fallbacks? {
+    switch fallbacks {
+    case .serverDefault:
+      return .serverDefault
+    case .models:
+      guard !hops.isEmpty else { return nil }
+      return .models(
+        hops.map { hop in
+          Fallback(
+            model: hop.model.id,
+            // An override can't unset a field, so a model that doesn't think
+            // is sent thinking that's turned off.
+            thinking: hop.thinking == thinking ? nil : (hop.thinking ?? .disabled),
+            outputConfig: hop.effort == outputConfig?.effort
+              ? nil : OutputConfig(format: outputConfig?.format, effort: hop.effort)
+          )
+        }
+      )
+    }
+  }
+
+  /// The level in `accepted` that's closest to `effort`, or `nil` when
+  /// `accepted` is empty. A tie goes to the lower level.
+  static func closestEffort(
+    to effort: ClaudeModel.Effort,
+    in accepted: Set<ClaudeModel.Effort>
+  ) -> ClaudeModel.Effort? {
+    let levels: [ClaudeModel.Effort] = [.low, .medium, .high, .xhigh, .max]
+    guard let target = levels.firstIndex(of: effort) else { return nil }
+    return levels.indices
+      .filter { accepted.contains(levels[$0]) }
+      .min { (abs($0 - target), $0) < (abs($1 - target), $1) }
+      .map { levels[$0] }
+  }
+
+  /// Whether `message` replays a model handover.
+  private static func carriesHandover(_ message: Message) -> Bool {
+    message.content.contains { block in
+      guard case .raw(let json) = block, case .fallback = TurnRecord.Kind(json) else {
+        return false
+      }
+      return true
+    }
   }
 
   // MARK: - Schema → JSON Schema
@@ -275,7 +382,7 @@ enum RequestBuilder {
       case .thinking: false
       case .raw(let json):
         switch TurnRecord.Kind(json) {
-        case .thinking, .redactedThinking: false
+        case .thinking, .redactedThinking, .fallback: false
         default: true
         }
       default: true
@@ -295,7 +402,9 @@ enum RequestBuilder {
       case .toolUse(let id, _): pairing.accepts(clientCall: id)
       case .serverToolUse(let id, _, _): pairing.accepts(serverCall: id)
       case .serverToolResult(_, let toolUseID, _): pairing.accepts(resultOf: toolUseID)
-      case .text, .other: true
+      // A handover block stays in place. It marks where one model's thinking
+      // ends, and the API rejects that thinking without it.
+      case .text, .fallback, .other: true
       }
     return accepted ? .raw(block.json) : nil
   }
@@ -315,6 +424,10 @@ enum RequestBuilder {
       switch block.kind {
       case .text: recordedCount += 1
       case .serverToolUse(let id, _, _): placeholderIDs.insert(id)
+      case .fallback:
+        placeholderIDs.insert(
+          ClaudeModelHandover.segmentID(turn: record.turn, position: block.position)
+        )
       default: break
       }
     }
@@ -507,9 +620,9 @@ enum RequestBuilder {
   private static func applySampling(
     _ options: GenerationOptions,
     to req: inout MessagesRequest,
-    model: ClaudeModel
+    allowed: Bool
   ) {
-    guard model.capabilities.samplingParams, req.thinking == nil else { return }
+    guard allowed, req.thinking == nil else { return }
     req.temperature = options.temperature
     switch options.samplingMode?.kind {
     case .greedy:

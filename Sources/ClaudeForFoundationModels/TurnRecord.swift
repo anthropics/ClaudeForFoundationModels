@@ -24,6 +24,7 @@ struct TurnRecord: Sendable, Equatable {
   private enum Stored {
     static let turn = "turn"
     static let blocks = "blocks"
+    static let model = "model"
     static let position = "at"
     static let block = "block"
   }
@@ -60,6 +61,9 @@ struct TurnRecord: Sendable, Equatable {
     case serverToolUse(id: String, name: String, input: JSONValue)
     /// The block answering a server-side call (`web_search_tool_result`, …).
     case serverToolResult(type: String, toolUseID: String, content: JSONValue)
+    /// A model handover (`fallback`): `from` declined, and `to` produced the
+    /// blocks that follow. `trigger` is the API's account of why, as sent.
+    case fallback(from: String, to: String, trigger: JSONValue)
     case other
 
     init(_ json: JSONValue) {
@@ -79,6 +83,10 @@ struct TurnRecord: Sendable, Equatable {
         self = .serverToolUse(id: id, name: name, input: json["input"] ?? [:])
       } else if type.hasSuffix("_tool_result"), let toolUseID = string("tool_use_id") {
         self = .serverToolResult(type: type, toolUseID: toolUseID, content: json["content"] ?? nil)
+      } else if type == "fallback", case .string(let from)? = json["from"]?["model"],
+        case .string(let to)? = json["to"]?["model"]
+      {
+        self = .fallback(from: from, to: to, trigger: json["trigger"] ?? nil)
       } else {
         self = .other
       }
@@ -89,6 +97,10 @@ struct TurnRecord: Sendable, Equatable {
   /// different turns that a transcript leaves side by side stay apart.
   var turn = ""
   var blocks: [Block] = []
+  /// The model the API named when it started the response (`message_start`).
+  /// Only the response entry records it. It is `nil` on other entries, and on
+  /// records from before this field existed.
+  var model: String?
 
   var isEmpty: Bool { blocks.isEmpty }
 
@@ -97,12 +109,14 @@ struct TurnRecord: Sendable, Equatable {
   /// for byte what went in however the transcript is persisted.
   static func metadata(
     turn: String,
-    stored: [String]
+    stored: [String],
+    model: String? = nil
   ) -> [String: any ConvertibleToGeneratedContent] {
     let turnText = JSONValue.string(turn).jsonText
+    let modelField = model.map { ",\"\(Stored.model)\":\(JSONValue.string($0).jsonText)" } ?? ""
     return [
       metadataKey:
-        "{\"\(Stored.blocks)\":[\(stored.joined(separator: ","))],\"\(Stored.turn)\":\(turnText)}"
+        "{\"\(Stored.blocks)\":[\(stored.joined(separator: ","))],\"\(Stored.turn)\":\(turnText)\(modelField)}"
     ]
   }
 }
@@ -117,6 +131,7 @@ extension TurnRecord {
       case .array(let items)? = stored[Stored.blocks]
     else { return }
     self.turn = turn
+    if case .string(let model)? = stored[Stored.model] { self.model = model }
     blocks = items.compactMap { item in
       guard case .number(let at)? = item[Stored.position], let position = Int(exactly: at),
         let json = item[Stored.block]

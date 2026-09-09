@@ -1,6 +1,7 @@
 // Copyright 2026 Anthropic PBC
 // SPDX-License-Identifier: Apache-2.0
 
+import ClaudeAPI
 import Foundation
 import FoundationModels
 import Testing
@@ -34,6 +35,47 @@ import Testing
     let request = try #require(transport.lastRequest)
     #expect(request.value(forHTTPHeaderField: "X-App-Token") == "abc")
     #expect(request.value(forHTTPHeaderField: "x-api-key") == nil)
+  }
+
+  @Test func `fallbacks reach the wire with the opt-in, after a proxy's own betas`() async throws {
+    let transport = MockTransport(body: okStream)
+    let session = LanguageModelSession(
+      model: StubbedClaudeModel(
+        transport: transport,
+        auth: .proxied(headers: ["Anthropic-Beta": "feature-1"]),
+        model: .opus5,
+        fallbacks: [.opus4_8]
+      )
+    )
+
+    _ = try await session.respond(to: "hi")
+
+    let request = try #require(transport.lastRequest)
+    #expect(
+      request.value(forHTTPHeaderField: "anthropic-beta")
+        == "feature-1,\(Fallbacks.betaHeader)"
+    )
+    let body = try #require(request.httpBody)
+    let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+    #expect(json["model"] as? String == "claude-opus-5")
+    let fallbacks = try #require(json["fallbacks"] as? [[String: Any]])
+    #expect(fallbacks.count == 1)
+    #expect(fallbacks.first?["model"] as? String == "claude-opus-4-8")
+    #expect(fallbacks.first?.count == 1)
+  }
+
+  @Test func `a beta joins anthropic-beta once, however the header is spelled`() {
+    #expect(
+      ClaudeExecutor.headers(["X-App-Token": "abc"], addingBetas: []) == ["X-App-Token": "abc"]
+    )
+    #expect(ClaudeExecutor.headers([:], addingBetas: ["beta-1"]) == ["anthropic-beta": "beta-1"])
+    #expect(
+      ClaudeExecutor.headers(
+        ["ANTHROPIC-BETA": "beta-0, beta-1"],
+        addingBetas: ["beta-1", "beta-2"]
+      )
+        == ["ANTHROPIC-BETA": "beta-0,beta-1,beta-2"]
+    )
   }
 
   @Test func `an empty api key fails before any request is sent`() async throws {

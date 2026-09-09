@@ -239,6 +239,8 @@ enum TurnBlock {
   case search(id: String, query: String)
   case searchResult(id: String)
   case toolUse(id: String, name: String)
+  /// A model handover, as the API sends one for a refusal.
+  case fallback(from: String, to: String, category: String?)
 
   var wire: JSONValue {
     switch self {
@@ -267,6 +269,11 @@ enum TurnBlock {
       ]
     case .toolUse(let id, let name):
       ["type": "tool_use", "id": .string(id), "name": .string(name), "input": [:]]
+    case .fallback(let from, let to, let category):
+      [
+        "type": "fallback", "from": ["model": .string(from)], "to": ["model": .string(to)],
+        "trigger": ["type": "refusal", "category": category.map(JSONValue.string) ?? nil],
+      ]
     }
   }
 
@@ -314,19 +321,23 @@ enum TurnBlock {
         delta(["type": "input_json_delta", "partial_json": .string(String(input[split...]))]),
         stop,
       ]
-    case .searchResult, .toolUse:
+    case .searchResult, .toolUse, .fallback:
       return [start(wire), stop]
     }
   }
 }
 
 /// A complete assistant response made of `blocks`, reporting 10 input and 5
-/// output tokens.
-func turn(_ blocks: [TurnBlock], stopReason: String = "end_turn") -> Data {
+/// output tokens. `message_start` names `model`.
+func turn(
+  _ blocks: [TurnBlock],
+  stopReason: String = "end_turn",
+  model: String = "claude-sonnet-5"
+) -> Data {
   var frames: [[String]] = [
     [
       "event: message_start",
-      #"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+      #"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"\#(model)","usage":{"input_tokens":10,"output_tokens":1}}}"#,
     ]
   ]
   for (index, block) in blocks.enumerated() {
@@ -409,17 +420,23 @@ struct StubbedClaudeModel: LanguageModel {
   let auth: AuthMode
   let attestSession: AppAttestSession?
   let capabilitySet: [LanguageModelCapabilities.Capability]
+  let model: ClaudeModel
+  let fallbacks: ClaudeFallbacks
 
   init(
     transport: MockTransport,
     auth: AuthMode = .apiKey("sk-test"),
     attestSession: AppAttestSession? = nil,
-    capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling, .reasoning]
+    capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling, .reasoning],
+    model: ClaudeModel = .sonnet5,
+    fallbacks: ClaudeFallbacks = []
   ) {
     self.transport = transport
     self.auth = auth
     self.attestSession = attestSession
     self.capabilitySet = capabilities
+    self.model = model
+    self.fallbacks = fallbacks
   }
 
   init(fixture: Data) {
@@ -431,7 +448,13 @@ struct StubbedClaudeModel: LanguageModel {
   }
 
   var executorConfiguration: StubbedExecutor.Configuration {
-    .init(transport: transport, auth: auth, attestSession: attestSession)
+    .init(
+      transport: transport,
+      auth: auth,
+      attestSession: attestSession,
+      model: model,
+      fallbacks: fallbacks
+    )
   }
 }
 
@@ -442,9 +465,12 @@ struct StubbedExecutor: LanguageModelExecutor {
     let transport: MockTransport
     let auth: AuthMode
     let attestSession: AppAttestSession?
+    var model: ClaudeModel = .sonnet5
+    var fallbacks: ClaudeFallbacks = []
 
     static func == (a: Self, b: Self) -> Bool {
       a.transport === b.transport && a.auth == b.auth && a.attestSession === b.attestSession
+        && a.model == b.model && a.fallbacks == b.fallbacks
     }
 
     func hash(into hasher: inout Hasher) {
@@ -460,10 +486,11 @@ struct StubbedExecutor: LanguageModelExecutor {
     self.configuration = configuration
     self.inner = ClaudeExecutor(
       configuration: .init(
-        model: .sonnet5,
+        model: configuration.model,
         baseURL: URL(string: "https://stub.invalid")!,
         authMode: configuration.auth,
-        timeout: 5
+        timeout: 5,
+        fallbacks: configuration.fallbacks
       ),
       transport: configuration.transport,
       attestSession: configuration.attestSession
@@ -477,7 +504,7 @@ struct StubbedExecutor: LanguageModelExecutor {
   ) async throws {
     try await inner.respond(
       to: request,
-      model: ClaudeLanguageModel(name: .sonnet5, auth: configuration.auth),
+      model: ClaudeLanguageModel(name: configuration.model, auth: configuration.auth),
       streamingInto: channel
     )
   }
@@ -505,7 +532,8 @@ func record(_ blocks: [JSONValue], from start: Int = 0, turn: String = "turn-1")
 
 /// A response entry recorded as `blocks` (at positions from `start`), with
 /// segments laid out the way the translator would have: a text segment per
-/// text block and an empty placeholder segment per server tool call.
+/// text block and an empty placeholder segment per server tool call and per
+/// handover.
 func recordedResponse(
   _ blocks: [JSONValue],
   from start: Int = 0,
@@ -516,6 +544,13 @@ func recordedResponse(
     switch block.kind {
     case .text(let text): .text(.init(content: text))
     case .serverToolUse(let id, _, _): .text(.init(id: id, content: ""))
+    case .fallback:
+      .text(
+        .init(
+          id: ClaudeModelHandover.segmentID(turn: recorded.turn, position: block.position),
+          content: ""
+        )
+      )
     default: nil
     }
   }
