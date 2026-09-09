@@ -68,7 +68,28 @@ public struct ClaudeModel: Sendable, Hashable {
   // Capability matrix per the Messages API docs: sampling params are rejected
   // on Sonnet 5 and Opus 4.7+ (Opus 4.6 still accepts them), `.xhigh` exists
   // only on Sonnet 5 and Opus 4.7+, and `.max` requires the 4.6 generation
-  // or newer. Opus 5 keeps the Opus 4.8 request surface.
+  // or newer. Opus 5 and Fable 5 keep the Opus 4.8 request surface. Fable 5.1
+  // keeps it too, except that it also rejects forced tool use (`tool_choice`
+  // `any` / `tool`) — a `.required` tool-calling mode is a contract, so it is
+  // sent as-is and the API error names the field.
+  public static let fable5_1 = ClaudeModel(
+    id: "claude-fable-5-1",
+    capabilities: .init(
+      effortLevels: [.low, .medium, .high, .xhigh, .max],
+      adaptiveThinking: true,
+      structuredOutput: true,
+      imageInput: true
+    )
+  )
+  public static let fable5 = ClaudeModel(
+    id: "claude-fable-5",
+    capabilities: .init(
+      effortLevels: [.low, .medium, .high, .xhigh, .max],
+      adaptiveThinking: true,
+      structuredOutput: true,
+      imageInput: true
+    )
+  )
   public static let opus5 = ClaudeModel(
     id: "claude-opus-5",
     capabilities: .init(
