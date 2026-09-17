@@ -33,7 +33,7 @@ public struct ClaudeLanguageModel: Sendable {
   let authMode: AuthMode
 
   /// - Parameters:
-  ///   - name: Claude model identifier. Use a constant (`.sonnet5`, `.opus5`,
+  ///   - name: Claude model identifier. Use a constant (`.sonnet5`, `.opus5_5`,
   ///     `.haiku4_5`), or construct a ``ClaudeModel`` with explicit capabilities
   ///     for IDs not yet compiled in.
   ///   - auth: Credential mode. `.apiKey` for prototyping; `.proxied` with a
