@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/anthropics/ClaudeForFoundationModels/compare/0.2.0...0.2.1) (2026-09-22)
+
+
+### Features
+
+* add claude-opus-5-5 ([#36](https://github.com/anthropics/ClaudeForFoundationModels/issues/36)) ([d34120a](https://github.com/anthropics/ClaudeForFoundationModels/commit/d34120a0d9a3e025c647f0db43455f5d9faf936e))
+
 ## [0.2.0](https://github.com/anthropics/ClaudeForFoundationModels/compare/0.1.4...0.2.0) (2026-09-09)
 
 
