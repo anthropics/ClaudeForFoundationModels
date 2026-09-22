@@ -240,7 +240,7 @@ import Testing
         .prompt(.init(segments: [.text(.init(content: "Hi"))]))
       ])
     )
-    for model: ClaudeModel in [.sonnet5, .opus4_8, .opus4_7, .sonnet4_6, .opus4_6] {
+    for model: ClaudeModel in [.opus5_5, .sonnet5, .opus4_8, .opus4_7, .sonnet4_6, .opus4_6] {
       let built = try RequestBuilder.build(from: request, model: model)
       #expect(built.request.thinking == .adaptive(display: .summarized))
     }

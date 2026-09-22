@@ -12,7 +12,7 @@ import FoundationModels
 /// request on a substitute model, within the same request:
 ///
 /// ```swift
-/// ClaudeLanguageModel(name: .opus5, auth: auth, fallbacks: [.opus4_8])
+/// ClaudeLanguageModel(name: .opus5_5, auth: auth, fallbacks: [.opus4_8])
 /// ```
 ///
 /// A model can decline after it has started to answer. The fallback model
