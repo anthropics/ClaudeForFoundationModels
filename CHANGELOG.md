@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/anthropics/ClaudeForFoundationModels/compare/0.2.1...0.2.2) (2026-09-28)
+
+
+### Features
+
+* **models:** add claude-sonnet-5-5  ([231d420](https://github.com/anthropics/ClaudeForFoundationModels/commit/231d4203c2a71594dc7566bb8110a7e2f31ca554))
+
 ## [0.2.1](https://github.com/anthropics/ClaudeForFoundationModels/compare/0.2.0...0.2.1) (2026-09-22)
 
 
