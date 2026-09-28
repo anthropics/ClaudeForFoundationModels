@@ -240,7 +240,9 @@ import Testing
         .prompt(.init(segments: [.text(.init(content: "Hi"))]))
       ])
     )
-    for model: ClaudeModel in [.opus5_5, .sonnet5, .opus4_8, .opus4_7, .sonnet4_6, .opus4_6] {
+    for model: ClaudeModel in [
+      .sonnet5_5, .opus5_5, .sonnet5, .opus4_8, .opus4_7, .sonnet4_6, .opus4_6,
+    ] {
       let built = try RequestBuilder.build(from: request, model: model)
       #expect(built.request.thinking == .adaptive(display: .summarized))
     }
@@ -272,6 +274,11 @@ import Testing
     #expect(guided.request.system == plain.request.system)
     #expect(guided.request.tools == plain.request.tools)
     #expect(guided.request.messages == plain.request.messages)
+  }
+
+  @Test func `sonnet 5.5 carries its API ID and the Sonnet 5 request surface`() {
+    #expect(ClaudeModel.sonnet5_5.id == "claude-sonnet-5-5")
+    #expect(ClaudeModel.sonnet5_5.capabilities == ClaudeModel.sonnet5.capabilities)
   }
 
   @Test func `a schema on a model without structured output fails loudly`() throws {

@@ -71,7 +71,17 @@ public struct ClaudeModel: Sendable, Hashable {
   // or newer. Opus 5 and Fable 5 keep the Opus 4.8 request surface. Fable 5.1
   // and Opus 5.5 keep it too, except that they also reject forced tool use
   // (`tool_choice` `any` / `tool`) — a `.required` tool-calling mode is a
-  // contract, so it is sent as-is and the API error names the field.
+  // contract, so it is sent as-is and the API error names the field. Sonnet
+  // 5.5 keeps the Sonnet 5 request surface.
+  public static let sonnet5_5 = ClaudeModel(
+    id: "claude-sonnet-5-5",
+    capabilities: .init(
+      effortLevels: [.low, .medium, .high, .xhigh, .max],
+      adaptiveThinking: true,
+      structuredOutput: true,
+      imageInput: true
+    )
+  )
   public static let opus5_5 = ClaudeModel(
     id: "claude-opus-5-5",
     capabilities: .init(
