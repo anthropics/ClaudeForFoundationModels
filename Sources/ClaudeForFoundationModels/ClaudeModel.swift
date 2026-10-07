@@ -72,7 +72,16 @@ public struct ClaudeModel: Sendable, Hashable {
   // and Opus 5.5 keep it too, except that they also reject forced tool use
   // (`tool_choice` `any` / `tool`) — a `.required` tool-calling mode is a
   // contract, so it is sent as-is and the API error names the field. Sonnet
-  // 5.5 keeps the Sonnet 5 request surface.
+  // 5.5 and Haiku 5.5 keep the Sonnet 5 request surface.
+  public static let haiku5_5 = ClaudeModel(
+    id: "claude-haiku-5-5",
+    capabilities: .init(
+      effortLevels: [.low, .medium, .high, .xhigh, .max],
+      adaptiveThinking: true,
+      structuredOutput: true,
+      imageInput: true
+    )
+  )
   public static let sonnet5_5 = ClaudeModel(
     id: "claude-sonnet-5-5",
     capabilities: .init(
