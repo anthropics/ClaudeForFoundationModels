@@ -193,7 +193,7 @@ import Testing
       ]),
       contextOptions: contextOptions
     )
-    // Haiku doesn't accept effort — sending it is a hard 400.
+    // Haiku 4.5 doesn't accept effort — sending it is a hard 400.
     let built = try RequestBuilder.build(from: request, model: .haiku4_5)
     #expect(built.request.outputConfig == nil)
   }
@@ -241,7 +241,7 @@ import Testing
       ])
     )
     for model: ClaudeModel in [
-      .sonnet5_5, .opus5_5, .sonnet5, .opus4_8, .opus4_7, .sonnet4_6, .opus4_6,
+      .haiku5_5, .sonnet5_5, .opus5_5, .sonnet5, .opus4_8, .opus4_7, .sonnet4_6, .opus4_6,
     ] {
       let built = try RequestBuilder.build(from: request, model: model)
       #expect(built.request.thinking == .adaptive(display: .summarized))
@@ -279,6 +279,11 @@ import Testing
   @Test func `sonnet 5.5 carries its API ID and the Sonnet 5 request surface`() {
     #expect(ClaudeModel.sonnet5_5.id == "claude-sonnet-5-5")
     #expect(ClaudeModel.sonnet5_5.capabilities == ClaudeModel.sonnet5.capabilities)
+  }
+
+  @Test func `haiku 5.5 carries its API ID and the Sonnet 5 request surface`() {
+    #expect(ClaudeModel.haiku5_5.id == "claude-haiku-5-5")
+    #expect(ClaudeModel.haiku5_5.capabilities == ClaudeModel.sonnet5.capabilities)
   }
 
   @Test func `a schema on a model without structured output fails loudly`() throws {
@@ -416,7 +421,7 @@ import Testing
       transcript: Transcript(entries: [.prompt(.init(segments: [.text(.init(content: "Hi"))]))]),
       generationOptions: options
     )
-    // Haiku takes sampling params and no adaptive thinking.
+    // Haiku 4.5 takes sampling params and no adaptive thinking.
     let built = try RequestBuilder.build(from: request, model: .haiku4_5)
     #expect(built.request.temperature == 0.5)
   }
