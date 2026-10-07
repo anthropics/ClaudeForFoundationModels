@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/anthropics/ClaudeForFoundationModels/compare/0.2.2...0.2.3) (2026-10-07)
+
+
+### Features
+
+* **models:** add claude-haiku-5-5 ([#40](https://github.com/anthropics/ClaudeForFoundationModels/issues/40)) ([eb0713d](https://github.com/anthropics/ClaudeForFoundationModels/commit/eb0713d516e0e00cafb856f1f66b730d6768abae))
+
 ## [0.2.2](https://github.com/anthropics/ClaudeForFoundationModels/compare/0.2.1...0.2.2) (2026-09-28)
 
 
